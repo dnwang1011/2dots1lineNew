@@ -21,10 +21,10 @@ model User {
   age               Int?
   city              String?
   episodes          Episode[]
+  chunkEmbeddings   ChunkEmbedding[]
+  thoughts          Thought[]
   ontologyProposals OntologyChangeProposal[]
   rawData           RawData[]
-  semanticChunks    SemanticChunk[]
-  thoughts          Thought[]
 }
 
 model RawData {
@@ -41,10 +41,9 @@ model RawData {
   processedAt        DateTime?
   processingError    String?
   processingStatus   String          @default("pending")
-  embeddings         Embedding[]
+  chunkEmbeddings    ChunkEmbedding[]
   episodes           Episode[]
   user               User            @relation(fields: [userId], references: [id])
-  chunks             SemanticChunk[]
   thoughts           Thought[]
 
   @@index([userId])
@@ -53,111 +52,75 @@ model RawData {
   @@index([createdAt])
 }
 
-model SemanticChunk {
-  id                 String      @id @default(cuid())
-  rawDataId          String
-  content            String
-  summary            String?
-  chunkIndex         Int
-  importanceScore    Float?
-  createdAt          DateTime    @default(now())
-  perspectiveOwnerId String      @db.Uuid
-  subjectId          String?     @db.Uuid
-  topicKey           String?
-  embeddings         Embedding[]
-  user               User        @relation(fields: [perspectiveOwnerId], references: [id])
-  rawData            RawData     @relation(fields: [rawDataId], references: [id], onDelete: Cascade)
-  thoughts           Thought[]
-
-  @@unique([rawDataId, chunkIndex])
-  @@index([perspectiveOwnerId])
-  @@index([topicKey])
-  @@index([createdAt])
-}
-
-model Embedding {
-  id                 String            @id @default(cuid())
-  vector             Float[]
-  dimension          Int
-  content            String
-  summary            String
-  importanceScore    Float
-  modelConfidence    Float             @default(1.0)
-  embeddingType      String
-  createdAt          DateTime          @default(now())
-  updatedAt          DateTime          @updatedAt
-  rawDataId          String?
-  chunkId            String?
-  episodeId          String?
-  thoughtId          String?
-  perspectiveOwnerId String            @db.Uuid
-  subjectId          String?           @db.Uuid
-  linkedNodeIds      String[]          @default([])
-  vectorCollection   String
-  vectorId           String
-  isIncremental      Boolean           @default(false)
-  chunk              SemanticChunk?    @relation(fields: [chunkId], references: [id])
-  episode            Episode?          @relation(fields: [episodeId], references: [id])
-  rawData            RawData?          @relation(fields: [rawDataId], references: [id])
-  updates            EmbeddingUpdate[]
-  thought            Thought?
+model ChunkEmbedding {
+  id           String   @id @default(cuid())
+  rawDataId    String
+  text         String     // full chunk text (<= 4 KB)
+  summary      String?    // first-pass LLM TL;DR
+  vector       Float[]
+  dimension    Int
+  importance   Float      // 0-1
+  metadata     String?    // JSON string for additional metadata (including forceImportant flag)
+  createdAt    DateTime   @default(now())
+  userId       String     @db.Uuid
+  episodes     ChunkEpisode[] // ⇄ many-to-many
+  user         User        @relation(fields: [userId], references: [id])
+  rawData      RawData     @relation(fields: [rawDataId], references: [id], onDelete: Cascade)
+  @@index([userId])
 }
 
 model Episode {
-  id                 String      @id @default(cuid())
-  rawDataId          String
-  title              String
-  narrative          String
-  occurredAt         DateTime?
-  emotionTags        String[]
-  createdAt          DateTime    @default(now())
-  userId             String      @db.Uuid
-  perspectiveOwnerId String      @db.Uuid
-  subjectId          String?     @db.Uuid
-  linkedNodeIds      String[]    @default([])
-  topicKey           String?
-  embeddings         Embedding[]
-  rawData            RawData     @relation(fields: [rawDataId], references: [id])
-  user               User        @relation(fields: [userId], references: [id])
-  thoughts           Thought[]
+  id           String    @id @default(cuid())
+  title        String
+  narrative    String
+  centroidVec  Float[]   // ➕ Added
+  centroidDim  Int       // ➕ Added
+  occurredAt   DateTime?
+  createdAt    DateTime  @default(now())
+  userId       String    @db.Uuid
+  rawDataId    String?   // ➕ Added back reference
+  chunks       ChunkEpisode[]   // ➕ Added
+  thoughts     EpisodeThought[] // ➕ Added
+  user         User        @relation(fields: [userId], references: [id])
+  rawData      RawData?    @relation(fields: [rawDataId], references: [id]) // ➕ Added relation
 
-  @@index([topicKey])
+  @@index([userId])
+  @@index([rawDataId]) // ➕ Added index for rawDataId
 }
 
 model Thought {
-  id                 String         @id @default(cuid())
-  title              String
-  content            String
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
-  modelConfidence    Float          @default(1.0)
-  subjectType        String
-  subjectName        String
-  rawDataId          String?
-  chunkId            String?
-  embeddingId        String?        @unique
-  episodeId          String?
-  perspectiveOwnerId String         @db.Uuid
-  subjectId          String?        @db.Uuid
-  linkedNodeIds      String[]       @default([])
-  chunk              SemanticChunk? @relation(fields: [chunkId], references: [id])
-  embedding          Embedding?     @relation(fields: [embeddingId], references: [id])
-  episode            Episode?       @relation(fields: [episodeId], references: [id])
-  user               User           @relation(fields: [perspectiveOwnerId], references: [id])
-  rawData            RawData?       @relation(fields: [rawDataId], references: [id])
+  id           String   @id @default(cuid())
+  name         String   // short label ("Musical Identity Crisis") - Changed from 'title'
+  description  String   // free-form insight text - Changed from 'content'
+  vector       Float[]  // ➕ Added
+  dimension    Int      // ➕ Added
+  createdAt    DateTime @default(now())
+  userId       String   @db.Uuid
+  rawDataId    String?  // ➕ Added back reference
+  episodes     EpisodeThought[] // ➕ Added
+  user         User @relation(fields: [userId], references: [id])
+  rawData      RawData? @relation(fields: [rawDataId], references: [id]) // ➕ Added relation
+
+  @@index([userId])
+  @@index([rawDataId]) // ➕ Added index for rawDataId
 }
 
-model EmbeddingUpdate {
-  id              String    @id @default(cuid())
-  embeddingId     String
-  previousVector  Float[]
-  similarityScore Float?
-  updateReason    String
-  sourceId        String?
-  createdAt       DateTime  @default(now())
-  embedding       Embedding @relation(fields: [embeddingId], references: [id])
+model ChunkEpisode {
+  chunkId   String
+  episodeId String
+  addedAt   DateTime @default(now())
+  @@id([chunkId, episodeId])
+  chunk     ChunkEmbedding @relation(fields: [chunkId], references: [id], onDelete: Cascade)
+  episode   Episode        @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+}
 
-  @@index([embeddingId])
+model EpisodeThought {
+  episodeId String
+  thoughtId String
+  weight    Float?   // optional "relevance weight"
+  @@id([episodeId, thoughtId])
+  episode   Episode  @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+  thought   Thought  @relation(fields: [thoughtId], references: [id], onDelete: Cascade)
 }
 
 model OntologyVersion {
@@ -215,3 +178,12 @@ model OntologyChangeProposal {
   @@index([status])
   @@index([userId])
 }
+
+// ------------- V1 MODELS (TEMPORARY) -------------
+// 🔥🔥🔥🔥 DELETED SemanticChunk MODEL 🔥🔥🔥🔥
+// 🔥🔥🔥🔥 DELETED Embedding MODEL 🔥🔥🔥🔥
+// 🔥🔥🔥🔥 DELETED EmbeddingUpdate MODEL 🔥🔥🔥🔥
+// ------------- END V1 MODELS -------------
+
+
+// -------------- MEMORY v2 --------------

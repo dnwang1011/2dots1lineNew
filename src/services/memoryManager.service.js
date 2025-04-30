@@ -32,42 +32,66 @@ async function checkWeaviateSchema() {
     return false;
   }
 
-  logger.info('[MemoryManager] Checking Weaviate schema...');
+  logger.info('[MemoryManager] Checking Weaviate schema for V2 memory models...');
   
   try {
     // Get the schema and check for required classes
-    const schema = await client.schema.getter().do(); // Use client from utility
+    const schema = await client.schema.getter().do();
     const existingClasses = schema.classes?.map(c => c.class) || [];
     
     logger.info(`[MemoryManager] Found existing classes: ${existingClasses.join(', ') || 'none'}`);
     
-    let needToCreateMemoryClass = !existingClasses.includes('Memory');
+    // Check for legacy Memory class - mark for deletion
+    const hasLegacyMemoryClass = existingClasses.includes('Memory');
+    if (hasLegacyMemoryClass) {
+      logger.info('[MemoryManager] Legacy Memory class found, will remove after migration is complete.');
+      // Uncomment the line below when ready to delete the Memory class
+      // await client.schema.classDeleter().withClassName('Memory').do();
+    }
+    
+    // Check for new V2 classes
+    let needToCreateChunkEmbeddingClass = !existingClasses.includes('ChunkEmbedding');
+    let needToCreateEpisodeEmbeddingClass = !existingClasses.includes('EpisodeEmbedding');
+    let needToCreateThoughtEmbeddingClass = !existingClasses.includes('ThoughtEmbedding');
+    
+    // Create any missing classes
+    if (needToCreateChunkEmbeddingClass) {
+      logger.info('[MemoryManager] ChunkEmbedding class not found, creating it...');
+      await createChunkEmbeddingClass(client);
+    } else {
+      logger.info('[MemoryManager] ChunkEmbedding class exists.');
+    }
+    
+    if (needToCreateEpisodeEmbeddingClass) {
+      logger.info('[MemoryManager] EpisodeEmbedding class not found, creating it...');
+      await createEpisodeEmbeddingClass(client);
+    } else {
+      logger.info('[MemoryManager] EpisodeEmbedding class exists.');
+    }
+    
+    if (needToCreateThoughtEmbeddingClass) {
+      logger.info('[MemoryManager] ThoughtEmbedding class not found, creating it...');
+      await createThoughtEmbeddingClass(client);
+    } else {
+      logger.info('[MemoryManager] ThoughtEmbedding class exists.');
+    }
+    
+    // Keep checking the other classes for backward compatibility
     let needToCreateKnowledgeNodeClass = !existingClasses.includes('KnowledgeNode');
     let needToCreateRelationshipClass = !existingClasses.includes('Relationship');
     
-    // Create any missing classes
-    if (needToCreateMemoryClass) {
-      logger.info('[MemoryManager] Memory class not found, creating it...');
-      await createMemoryClass(client); // Pass the client
-    } else {
-      logger.info('[MemoryManager] Memory class exists.');
-      await checkMissingProperties(client, 'Memory', existingClasses); // Pass the client
-    }
-    
     if (needToCreateKnowledgeNodeClass) {
       logger.info('[MemoryManager] KnowledgeNode class not found, creating it...');
-      await createKnowledgeNodeClass(client); // Pass the client
+      await createKnowledgeNodeClass(client);
     } else {
       logger.info('[MemoryManager] KnowledgeNode class exists.');
-      await checkMissingProperties(client, 'KnowledgeNode', existingClasses); // Pass the client
     }
     
     if (needToCreateRelationshipClass) {
       logger.info('[MemoryManager] Relationship class not found, creating it...');
-      await createRelationshipClass(client); // Pass the client
+      await createRelationshipClass(client);
     } else {
       logger.info('[MemoryManager] Relationship class exists.');
-      await checkMissingProperties(client, 'Relationship', existingClasses); // Pass the client
     }
     
     logger.info('[MemoryManager] Weaviate schema check completed successfully');
@@ -78,9 +102,11 @@ async function checkWeaviateSchema() {
       logger.info('[MemoryManager] Schema not found, creating full schema...');
       
       try {
-        await createMemoryClass(client); // Pass the client
-        await createKnowledgeNodeClass(client); // Pass the client
-        await createRelationshipClass(client); // Pass the client
+        await createChunkEmbeddingClass(client);
+        await createEpisodeEmbeddingClass(client);
+        await createThoughtEmbeddingClass(client);
+        await createKnowledgeNodeClass(client);
+        await createRelationshipClass(client);
         logger.info('[MemoryManager] Full schema created successfully');
         return true;
       } catch (createError) {
@@ -399,6 +425,179 @@ async function createRelationshipClass(client) {
   }
 }
 
+/**
+ * Creates the ChunkEmbedding class in Weaviate
+ * @param {Object} client - Weaviate client instance
+ */
+async function createChunkEmbeddingClass(client) {
+  if (!client) {
+    logger.error('Weaviate client not available in createChunkEmbeddingClass');
+    throw new Error('Weaviate client is required to create class');
+  }
+  try {
+    const classObj = {
+      class: 'ChunkEmbedding',
+      description: 'A memory chunk with its associated embedding vector',
+      vectorizer: 'none', // Set vectorizer to none as we provide vectors manually
+      properties: [
+        {
+          name: 'id',
+          description: 'ID of the ChunkEmbedding in the database',
+          dataType: ['text'],
+        },
+        {
+          name: 'text',
+          description: 'The full text content of the chunk',
+          dataType: ['text'],
+        },
+        {
+          name: 'rawDataId',
+          description: 'ID of the source raw data',
+          dataType: ['text']
+        },
+        {
+          name: 'importance',
+          description: 'Importance score of the memory (0-1)',
+          dataType: ['number']
+        },
+        {
+          name: 'dataType',
+          description: 'Type of data (message, image_analysis, document, etc.)',
+          dataType: ['text']
+        },
+        {
+          name: 'metadata',
+          description: 'Additional metadata about the memory',
+          dataType: ['text']
+        },
+        {
+          name: 'createdAt',
+          description: 'Timestamp when the memory was created',
+          dataType: ['date']
+        },
+        {
+          name: 'userId',
+          description: 'ID of the user this memory belongs to',
+          dataType: ['text']
+        }
+      ]
+    };
+    
+    await client.schema.classCreator().withClass(classObj).do();
+    logger.info('[MemoryManager] Created ChunkEmbedding class in Weaviate');
+  } catch (error) {
+    logger.error('[MemoryManager] Error creating ChunkEmbedding class:', { error });
+    throw error;
+  }
+}
+
+/**
+ * Creates the EpisodeEmbedding class in Weaviate
+ * @param {Object} client - Weaviate client instance
+ */
+async function createEpisodeEmbeddingClass(client) {
+  if (!client) {
+    logger.error('Weaviate client not available in createEpisodeEmbeddingClass');
+    throw new Error('Weaviate client is required to create class');
+  }
+  try {
+    const classObj = {
+      class: 'EpisodeEmbedding',
+      description: 'An episode with its centroid vector',
+      vectorizer: 'none', // Set vectorizer to none as we provide vectors manually
+      properties: [
+        {
+          name: 'id',
+          description: 'ID of the Episode in the database',
+          dataType: ['text'],
+        },
+        {
+          name: 'title',
+          description: 'Title of the episode',
+          dataType: ['text'],
+        },
+        {
+          name: 'narrative',
+          description: 'Narrative description of the episode',
+          dataType: ['text']
+        },
+        {
+          name: 'occurredAt',
+          description: 'When the episode occurred',
+          dataType: ['date']
+        },
+        {
+          name: 'createdAt',
+          description: 'Timestamp when the episode was created',
+          dataType: ['date']
+        },
+        {
+          name: 'userId',
+          description: 'ID of the user this episode belongs to',
+          dataType: ['text']
+        }
+      ]
+    };
+    
+    await client.schema.classCreator().withClass(classObj).do();
+    logger.info('[MemoryManager] Created EpisodeEmbedding class in Weaviate');
+  } catch (error) {
+    logger.error('[MemoryManager] Error creating EpisodeEmbedding class:', { error });
+    throw error;
+  }
+}
+
+/**
+ * Creates the ThoughtEmbedding class in Weaviate
+ * @param {Object} client - Weaviate client instance
+ */
+async function createThoughtEmbeddingClass(client) {
+  if (!client) {
+    logger.error('Weaviate client not available in createThoughtEmbeddingClass');
+    throw new Error('Weaviate client is required to create class');
+  }
+  try {
+    const classObj = {
+      class: 'ThoughtEmbedding',
+      description: 'A thought insight with its vector',
+      vectorizer: 'none', // Set vectorizer to none as we provide vectors manually
+      properties: [
+        {
+          name: 'id',
+          description: 'ID of the Thought in the database',
+          dataType: ['text'],
+        },
+        {
+          name: 'name',
+          description: 'Short label for the thought',
+          dataType: ['text'],
+        },
+        {
+          name: 'description',
+          description: 'Free-form insight text',
+          dataType: ['text']
+        },
+        {
+          name: 'createdAt',
+          description: 'Timestamp when the thought was created',
+          dataType: ['date']
+        },
+        {
+          name: 'userId',
+          description: 'ID of the user this thought belongs to',
+          dataType: ['text']
+        }
+      ]
+    };
+    
+    await client.schema.classCreator().withClass(classObj).do();
+    logger.info('[MemoryManager] Created ThoughtEmbedding class in Weaviate');
+  } catch (error) {
+    logger.error('[MemoryManager] Error creating ThoughtEmbedding class:', { error });
+    throw error;
+  }
+}
+
 // --- Memory Manager Class ---
 class MemoryManager {
   constructor() {
@@ -452,6 +651,12 @@ class MemoryManager {
         timestamp: rawData.createdAt
       };
       
+      // Check if this content is flagged as forceImportant (from document upload)
+      const forceImportant = !!rawData.forceImportant;
+      if (forceImportant) {
+        logger.info(`[MemoryManager] Raw data ${rawData.id} is flagged as forceImportant, will keep all chunks`);
+      }
+      
       // Step 1: Evaluate importance
       const importanceScore = await this.evaluateImportance(content, type, metadata);
       
@@ -461,8 +666,8 @@ class MemoryManager {
         data: { importanceScore }
       });
       
-      // Skip further processing if below importance threshold
-      if (importanceScore < DEFAULT_IMPORTANCE_THRESHOLD) {
+      // Skip further processing if below importance threshold AND not forceImportant
+      if (importanceScore < DEFAULT_IMPORTANCE_THRESHOLD && !forceImportant) {
         logger.info(`Raw data ${rawData.id} below importance threshold (${importanceScore.toFixed(2)}), skipping further processing`);
         await prisma.rawData.update({
           where: { id: rawData.id },
@@ -477,7 +682,8 @@ class MemoryManager {
       // Step 2: Create semantic chunks
       const chunks = await this.chunkContent(content, {
          ...metadata, // Pass metadata to chunking
-         rawDataId: rawData.id
+         rawDataId: rawData.id,
+         forceImportant: forceImportant // Pass the forceImportant flag to chunking
       });
       
       // Skip if no chunks were created
@@ -685,11 +891,17 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
    */
   async chunkContent(content, metadata = {}) {
     if (!content || typeof content !== 'string') {
-      logger.warn('[MemoryManager] Cannot chunk empty or non-string content'); // Use logger
+      logger.warn('[MemoryManager] Cannot chunk empty or non-string content');
       return [];
     }
 
-    logger.info(`[MemoryManager] Chunking content: ${content.length} characters`); // Use logger
+    // Check if this content is flagged as forceImportant (for document uploads)
+    const forceImportant = !!metadata.forceImportant;
+    if (forceImportant) {
+      logger.info(`[MemoryManager] Content is flagged as forceImportant, all chunks will be kept`);
+    }
+
+    logger.info(`[MemoryManager] Chunking content: ${content.length} characters`);
     
     try {
       const chunks = [];
@@ -713,7 +925,7 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
         if (content.length <= MAX_CHUNK_SIZE) {
           chunks.push({
             text: content,
-            metadata
+            metadata: { ...metadata, forceImportant } // Include forceImportant flag
           });
         } else {
           // If too large, split by paragraphs or just characters
@@ -723,7 +935,7 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
               if (paragraph.trim().length > 0) {
                 chunks.push({
                   text: paragraph.trim(),
-                  metadata
+                  metadata: { ...metadata, forceImportant } // Include forceImportant flag
                 });
               }
             }
@@ -735,7 +947,7 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
               if (chunk.trim().length > 0) {
                 chunks.push({
                   text: chunk.trim(),
-                  metadata
+                  metadata: { ...metadata, forceImportant } // Include forceImportant flag
                 });
               }
               i += TARGET_CHUNK_SIZE;
@@ -765,7 +977,7 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
           if (currentChunk.length > 0) {
             chunks.push({
               text: currentChunk.trim(),
-              metadata
+              metadata: { ...metadata, forceImportant } // Include forceImportant flag
             });
             currentChunk = '';
             currentTokenCount = 0;
@@ -788,7 +1000,7 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
               if (subChunk.length > 0) {
                 chunks.push({
                   text: subChunk.trim(),
-                  metadata
+                  metadata: { ...metadata, forceImportant } // Include forceImportant flag
                 });
               }
               subChunk = word;
@@ -801,7 +1013,7 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
           if (subChunk.length > 0) {
             chunks.push({
               text: subChunk.trim(),
-              metadata
+              metadata: { ...metadata, forceImportant } // Include forceImportant flag
             });
           }
           continue;
@@ -813,7 +1025,7 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
           if (currentChunk.length > 0) {
             chunks.push({
               text: currentChunk.trim(),
-              metadata
+              metadata: { ...metadata, forceImportant } // Include forceImportant flag
             });
           }
           
@@ -833,7 +1045,7 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
         if (i === sentences.length - 1 && currentChunk.length > 0) {
           chunks.push({
             text: currentChunk.trim(),
-            metadata
+            metadata: { ...metadata, forceImportant } // Include forceImportant flag
           });
         }
       }
@@ -846,19 +1058,20 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
           position: index,
           totalChunks: chunks.length,
           charCount: chunk.text.length,
-          tokenCount: countTokens(chunk.text)
+          tokenCount: countTokens(chunk.text),
+          forceImportant: forceImportant // Ensure forceImportant is set
         };
       });
       
-      logger.info(`[MemoryManager] Created ${chunks.length} chunks from content`); // Use logger
+      logger.info(`[MemoryManager] Created ${chunks.length} chunks from content`);
       return chunks;
     } catch (error) {
-      logger.error(`[MemoryManager] Error chunking content: ${error.message}`, { error }); // Use logger
+      logger.error(`[MemoryManager] Error chunking content: ${error.message}`, { error });
       // Fallback to basic chunking
       if (content.length <= MAX_CHUNK_SIZE) {
         return [{
           text: content,
-          metadata
+          metadata: { ...metadata, forceImportant } // Include forceImportant flag
         }];
       } else {
         // Simple chunk by character count as a last resort
@@ -869,7 +1082,7 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
           if (chunk.trim().length > 0) {
             simpleChunks.push({
               text: chunk.trim(),
-              metadata
+              metadata: { ...metadata, forceImportant } // Include forceImportant flag
             });
           }
           i += TARGET_CHUNK_SIZE;
@@ -892,87 +1105,91 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
         
-        // Use the correct model name: prisma.semanticChunk
-        const chunkRecord = await prisma.semanticChunk.create({
+        // Check if this chunk is flagged as forceImportant
+        const forceImportant = chunk.metadata?.forceImportant || false;
+        
+        // Generate embedding using AI service
+        const vector = await aiService.generateEmbedding(chunk.text);
+        
+        if (!vector || vector.length === 0) {
+          logger.warn(`[MemoryManager] Failed to generate embedding for chunk from rawData ${rawData.id}`);
+          continue;
+        }
+
+        // Use the new ChunkEmbedding model instead of SemanticChunk + Embedding
+        const chunkRow = await prisma.chunkEmbedding.create({
           data: {
             rawDataId: rawData.id,
-            content: chunk.text,
-            chunkIndex: i,
-            // Use the importance passed down or default
-            importanceScore: chunk.importance || 0.5, 
-            // Assuming perspectiveOwnerId and subjectId come from rawData for now
-            perspectiveOwnerId: rawData.perspectiveOwnerId,
-            subjectId: rawData.subjectId,
-            topicKey: rawData.topicKey, // Propagate topicKey
-            // Add other fields if necessary based on your SemanticChunk model
+            text: chunk.text,
+            summary: chunk.summary ?? null,
+            vector: vector,
+            dimension: vector.length,
+            importance: chunk.importance || 0.5,
+            userId: rawData.userId,
+            // Include metadata in JSON format 
+            metadata: JSON.stringify({
+              ...chunk.metadata,
+              forceImportant: forceImportant
+            })
           }
         });
         
-        logger.info(`[MemoryManager] Stored chunk ${chunkRecord.id} (index: ${i}) for rawData ${rawData.id}`); // Use logger
+        // Log whether this chunk was forcibly kept
+        if (forceImportant) {
+          logger.info(`[MemoryManager] Stored ChunkEmbedding ${chunkRow.id} (index: ${i}) with forceImportant=true for rawData ${rawData.id}`);
+        } else {
+          logger.info(`[MemoryManager] Stored ChunkEmbedding ${chunkRow.id} (index: ${i}) for rawData ${rawData.id}`);
+        }
         
+        // Emit event for chunk.added with chunkRow.id (to trigger episodeAgent processing)
+        try {
+          // Import episodeAgent
+          const episodeAgent = require('./episodeAgent');
+          // Process the new chunk to find matching episodes
+          await episodeAgent.processChunk(chunkRow.id, rawData.userId);
+          logger.info(`[MemoryManager] Triggered episodeAgent for ChunkEmbedding ${chunkRow.id}`);
+        } catch (agentError) {
+          // Log but don't fail the storage process
+          logger.error(`[MemoryManager] Failed to trigger episodeAgent: ${agentError.message}`);
+        }
+
         // Add database ID and other relevant info to the result
         storedChunks.push({
-          ...chunkRecord, // Include all fields from the created record
-          text: chunkRecord.content // Ensure 'text' field exists for generateAndStoreEmbeddings if needed
+          ...chunkRow, // Include all fields from the created record
         });
       }
       
       return storedChunks;
     } catch (error) {
-      logger.error(`[MemoryManager] Error storing chunks for rawData ${rawData.id}:`, { error }); // Use logger
+      logger.error(`[MemoryManager] Error storing chunks for rawData ${rawData.id}:`, { error });
       // Throw the error so processRawData catch block handles DB state update
       throw error; 
     }
   }
 
   /**
-   * Generate embeddings for chunks and store in Weaviate
-   * @param {Array} chunks - Array of chunks to process
+   * Prepare and store chunks in Weaviate
+   * @param {Array} chunks - Array of ChunkEmbedding objects (already stored in DB)
    * @param {Object} rawData - The raw data record
    * @param {boolean} isWeaviateAvailable - Flag indicating if Weaviate is up
    * @returns {Promise<Array>} - Array of objects ready for Weaviate import
    */
   async generateAndStoreEmbeddings(chunks, rawData, isWeaviateAvailable) {
     if (!chunks || chunks.length === 0) {
-      logger.info('[MemoryManager] No chunks to process for embeddings');
+      logger.info('[MemoryManager] No chunks to process for Weaviate');
       return [];
     }
 
-    logger.info(`[MemoryManager] Generating embeddings for ${chunks.length} chunks`);
+    logger.info(`[MemoryManager] Preparing ${chunks.length} ChunkEmbeddings for Weaviate`);
     
     const weaviateObjects = [];
 
     try {
-      // Process each chunk
+      // Process each ChunkEmbedding - vectors are already generated and stored
       for (const chunk of chunks) {
         try {
-          // Generate embedding using AI service
-          const embedding = await aiService.generateEmbedding(chunk.text);
-          
-          if (!embedding || embedding.length === 0) {
-            logger.warn(`[MemoryManager] Failed to generate embedding for chunk: ${chunk.id}`);
-            continue;
-          }
-
-          // Save embedding metadata to PostgreSQL
-          const embeddingRecord = await prisma.embedding.create({
-            data: {
-              chunkId: chunk.id,
-              vector: embedding,
-              dimension: embedding.length,
-              embeddingType: 'google_embedding_001',
-              vectorCollection: 'weaviate_memory',
-              vectorId: chunk.id,
-              perspectiveOwnerId: rawData.perspectiveOwnerId,
-              content: chunk.text.substring(0, 200),
-              summary: '',
-              importanceScore: chunk.importance || 0.5,
-              rawDataId: rawData.id,
-              subjectId: rawData.subjectId,
-            }
-          });
-          
-          logger.info(`[MemoryManager] Created embedding record: ${embeddingRecord.id} for chunk ${chunk.id}`);
+          // No need to generate embeddings or create Embedding records
+          // as vectors are already part of ChunkEmbedding
           
           // Only prepare Weaviate object if available
           if (isWeaviateAvailable) {
@@ -980,37 +1197,37 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
               const weaviateObject = {
                 id: weaviateUuid, 
                 properties: {
-                  content: chunk.text,
+                  id: chunk.id, // Store the ChunkEmbedding ID
+                  text: chunk.text,
                   rawDataId: rawData.id,
-                  chunkId: chunk.id, 
-                  importance: chunk.importance || 0.5,
+                  importance: chunk.importance,
                   dataType: rawData.contentType,
-                  metadata: JSON.stringify({ userId: rawData.userId, sessionId: rawData.sessionId }),
+                  metadata: JSON.stringify({ userId: chunk.userId, sessionId: rawData.sessionId }),
                   createdAt: chunk.createdAt?.toISOString() || new Date().toISOString(),
-                  userId: rawData.userId // Add direct userId property
+                  userId: chunk.userId
                 },
-                vector: embedding
+                vector: chunk.vector
               };
               weaviateObjects.push(weaviateObject);
           } else {
-              logger.warn(`[MemoryManager] Skipping Weaviate object preparation for chunk ${chunk.id} as Weaviate is not available.`);
+              logger.warn(`[MemoryManager] Skipping Weaviate object preparation for ChunkEmbedding ${chunk.id} as Weaviate is not available.`);
           }
 
         } catch (error) {
-          logger.error(`[MemoryManager] Error processing embedding for chunk ${chunk?.id}:`, { error });
+          logger.error(`[MemoryManager] Error processing Weaviate object for ChunkEmbedding ${chunk?.id}:`, { error });
         }
       }
       
       // Only import if Weaviate is available and objects exist
       if (isWeaviateAvailable && weaviateObjects.length > 0) {
-        await this.batchImportToWeaviate(weaviateObjects);
+        await this.batchImportToWeaviate(weaviateObjects, 'ChunkEmbedding'); // Updated class name
       } else if (weaviateObjects.length > 0) {
          logger.warn('[MemoryManager] Skipping Weaviate import as client is not available.');
       }
       
       return weaviateObjects;
     } catch (error) {
-      logger.error(`[MemoryManager] Error in generateAndStoreEmbeddings main loop for rawData ${rawData?.id}:`, { error });
+      logger.error(`[MemoryManager] Error in importChunksToWeaviate for rawData ${rawData?.id}:`, { error });
       return []; 
     }
   }
@@ -1110,8 +1327,9 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
   }
 
   /**
-   * Retrieves memories similar to the provided query
+   * Retrieves memories similar to the provided query using 3-stage search
    * @param {string} query - The search query 
+   * @param {string} userId - User ID to filter results
    * @param {Object} options - Search options
    * @param {number} options.limit - Maximum number of results to return (default: 10)
    * @param {number} options.minImportance - Minimum importance score threshold (default: 0.3)
@@ -1120,20 +1338,20 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
    * @returns {Promise<Array>} - Array of memory objects with similarity scores
    */
   async retrieveMemories(query, userId, options = {}) {
-    const client = weaviateClientUtil.getClient(); // Get client from utility
+    const client = weaviateClientUtil.getClient();
     if (!client) {
-       logger.error('[MemoryManager] Cannot retrieve memories: Weaviate client is unavailable.');
-       return [];
+      logger.error('[MemoryManager] Cannot retrieve memories: Weaviate client is unavailable.');
+      return [];
     }
     
     if (!query || typeof query !== 'string' || query.trim().length === 0) {
-      logger.error('[MemoryManager] Cannot retrieve memories: Invalid query provided.'); // Use logger
+      logger.error('[MemoryManager] Cannot retrieve memories: Invalid query provided.');
       return [];
     }
 
     if (!userId) {
-        logger.error('[MemoryManager] Cannot retrieve memories: userId is required.');
-        return [];
+      logger.error('[MemoryManager] Cannot retrieve memories: userId is required.');
+      return [];
     }
 
     const {
@@ -1147,74 +1365,212 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
       logger.info(`[MemoryManager] Retrieving memories for user ${userId} similar to: "${query.substring(0, 50)}..."`);
       
       // Generate embedding for the query
-      const embedding = await aiService.generateEmbedding(query);
-      if (!embedding || !Array.isArray(embedding)) {
-        logger.error('[MemoryManager] Failed to generate embedding for query'); // Use logger
+      const queryEmbedding = await aiService.generateEmbedding(query);
+      if (!queryEmbedding || !Array.isArray(queryEmbedding)) {
+        logger.error('[MemoryManager] Failed to generate embedding for query');
         return [];
       }
 
-      // Build Weaviate query
-      let weaviateQuery = client.graphql
-        .get()
-        .withClassName('Memory')
-        .withFields('content rawDataId chunkId importance dataType metadata createdAt _additional { certainty }')
-        .withNearVector({
-          vector: embedding,
-          certainty: certainty
-        })
-        .withLimit(limit);
+      // ---- STAGE 1: Search EpisodeEmbedding by centroid vectors ----
+      logger.info('[MemoryManager] Stage 1: Searching EpisodeEmbedding by centroid vectors');
+      
+      // Try to find episodes similar to the query
+      let episodeResults = [];
+      try {
+        const episodeQuery = client.graphql
+          .get()
+          .withClassName('EpisodeEmbedding')
+          .withFields('id title narrative occurredAt createdAt userId _additional { certainty }')
+          .withNearVector({
+            vector: queryEmbedding,
+            certainty: certainty * 0.8 // Slightly lower threshold for episodes
+          })
+          .withWhere({
+            operator: 'Equal',
+            path: ['userId'],
+            valueString: userId
+          })
+          .withLimit(5) // Retrieve top episodes
+          .do();
+        
+        const episodeData = await episodeQuery;
+        
+        if (episodeData?.data?.Get?.EpisodeEmbedding) {
+          episodeResults = episodeData.data.Get.EpisodeEmbedding.map(ep => ({
+            ...ep,
+            similarity: ep._additional.certainty,
+            _additional: undefined,
+            type: 'episode'
+          }));
+          logger.info(`[MemoryManager] Found ${episodeResults.length} relevant episodes`);
+        }
+      } catch (error) {
+        logger.error('[MemoryManager] Error searching EpisodeEmbedding:', { error });
+        // Continue with direct chunk search if episode search fails
+      }
+      
+      // ---- STAGE 2: Collect linked ChunkEmbedding ids from episodes + direct search ----
+      logger.info('[MemoryManager] Stage 2: Collecting linked chunks and direct chunk search');
+      
+      let chunkIds = [];
+      let directChunkResults = [];
+      
+      // 2a: Get chunks from episodes if any were found
+      if (episodeResults.length > 0) {
+        try {
+          const episodeIds = episodeResults.map(ep => ep.id);
+          const linkedChunks = await prisma.chunkEpisode.findMany({
+            where: {
+              episodeId: { in: episodeIds }
+            },
+            select: {
+              chunkId: true,
+              episode: { select: { id: true } }
+            }
+          });
+          
+          chunkIds = linkedChunks.map(link => link.chunkId);
+          logger.info(`[MemoryManager] Found ${chunkIds.length} chunks linked to episodes`);
+        } catch (error) {
+          logger.error('[MemoryManager] Error fetching linked chunks:', { error });
+        }
+      }
 
-      // Build the where filter with MANDATORY userId filter
-      const filterOperands = [
-          {
-              path: ['userId'], // Filter by the new userId property
-              operator: 'Equal',
-              valueString: userId
-          },
-          {
-            path: ['importance'],
-            operator: 'GreaterThanEqual',
-            valueNumber: minImportance
+      // 2b: Direct chunk search (as fallback or complement)
+      try {
+        // Only search chunks directly if we didn't find enough through episodes
+        if (chunkIds.length < limit) {
+          const directChunkLimit = limit - chunkIds.length;
+          
+          const chunkQuery = client.graphql
+            .get()
+            .withClassName('ChunkEmbedding')
+            .withFields('id text rawDataId importance dataType metadata createdAt userId _additional { certainty }')
+            .withNearVector({
+              vector: queryEmbedding,
+              certainty: certainty
+            })
+            .withWhere({
+              operator: 'And',
+              operands: [
+                {
+                  path: ['userId'],
+                  operator: 'Equal',
+                  valueString: userId
+                },
+                {
+                  path: ['importance'],
+                  operator: 'GreaterThanEqual',
+                  valueNumber: minImportance
+                }
+              ]
+            })
+            .withLimit(directChunkLimit)
+            .do();
+          
+          const chunkData = await chunkQuery;
+          
+          if (chunkData?.data?.Get?.ChunkEmbedding) {
+            directChunkResults = chunkData.data.Get.ChunkEmbedding.map(chunk => ({
+              ...chunk,
+              similarity: chunk._additional.certainty,
+              _additional: undefined,
+              type: 'chunk'
+            }));
+            logger.info(`[MemoryManager] Found ${directChunkResults.length} directly relevant chunks`);
           }
+        }
+      } catch (error) {
+        logger.error('[MemoryManager] Error in direct chunk search:', { error });
+      }
+      
+      // 2c: Fetch the full chunk data for episode-linked chunks
+      let episodeLinkedChunks = [];
+      if (chunkIds.length > 0) {
+        try {
+          // Fetch the actual chunk data from the database
+          const chunkData = await prisma.chunkEmbedding.findMany({
+            where: {
+              id: { in: chunkIds }
+            }
+          });
+          
+          // Since we don't have similarity scores for these, estimate based on parent episode
+          episodeLinkedChunks = chunkData.map(chunk => {
+            // Try to find which episode this chunk came from
+            const relevantEpisode = episodeResults.find(ep => {
+              return chunkIds.includes(chunk.id);
+            });
+            
+            return {
+              ...chunk,
+              type: 'chunk',
+              fromEpisode: relevantEpisode?.id,
+              episodeTitle: relevantEpisode?.title,
+              // Use episode similarity as a proxy, with slight penalty
+              similarity: relevantEpisode ? relevantEpisode.similarity * 0.9 : 0.7
+            };
+          });
+        } catch (error) {
+          logger.error('[MemoryManager] Error fetching episode-linked chunks:', { error });
+        }
+      }
+      
+      // ---- STAGE 3: Overlay with Thought search for high-level insights ----
+      logger.info('[MemoryManager] Stage 3: Searching for relevant thoughts');
+      
+      let thoughtResults = [];
+      try {
+        const thoughtQuery = client.graphql
+          .get()
+          .withClassName('ThoughtEmbedding')
+          .withFields('id name description createdAt userId _additional { certainty }')
+          .withNearVector({
+            vector: queryEmbedding,
+            certainty: certainty * 0.75 // Lower threshold for abstract thoughts
+          })
+          .withWhere({
+            operator: 'Equal',
+            path: ['userId'],
+            operator: 'Equal',
+            valueString: userId
+          })
+          .withLimit(3) // Just a few high-level insights
+          .do();
+        
+        const thoughtData = await thoughtQuery;
+        
+        if (thoughtData?.data?.Get?.ThoughtEmbedding) {
+          thoughtResults = thoughtData.data.Get.ThoughtEmbedding.map(thought => ({
+            ...thought,
+            similarity: thought._additional.certainty,
+            _additional: undefined,
+            type: 'thought'
+          }));
+          logger.info(`[MemoryManager] Found ${thoughtResults.length} relevant thoughts`);
+        }
+      } catch (error) {
+        logger.error('[MemoryManager] Error searching ThoughtEmbedding:', { error });
+        // Continue without thoughts if this fails
+      }
+      
+      // Combine all results
+      const combinedResults = [
+        ...episodeResults,
+        ...episodeLinkedChunks,
+        ...directChunkResults,
+        ...thoughtResults
       ];
-
-      // Add dataType filter if specified
-      if (dataType) {
-        filterOperands.push({
-          path: ['dataType'],
-          operator: 'Equal',
-          valueString: dataType
-        });
-      }
       
-      const whereFilter = {
-        operator: 'And',
-        operands: filterOperands
-      };
-
-      weaviateQuery = weaviateQuery.withWhere(whereFilter);
-
-      // Execute query
-      const result = await weaviateQuery.do();
+      // Sort by similarity and limit
+      const finalResults = combinedResults
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, limit);
       
-      // Process and return results
-      if (result && result.data && result.data.Get && result.data.Get.Memory) {
-        const memories = result.data.Get.Memory;
-        
-        logger.info(`[MemoryManager] Retrieved ${memories.length} memories`); // Use logger
-        
-        // Format results
-        return memories.map(memory => ({
-          ...memory,
-          similarity: memory._additional.certainty,
-          _additional: undefined // Remove _additional property
-        }));
-      }
-      
-      logger.info('[MemoryManager] No memories found matching the query'); // Use logger
-      return [];
+      logger.info(`[MemoryManager] Returning ${finalResults.length} total memories`);
+      return finalResults;
     } catch (error) {
-      logger.error('[MemoryManager] Error retrieving memories:', { error }); // Use logger
+      logger.error('[MemoryManager] Error in retrieveMemories:', { error });
       return [];
     }
   }

@@ -329,6 +329,9 @@ exports.uploadFile = (req, res, next) => { // Add next
 
                 // --- Record the EXTRACTED DOCUMENT CONTENT for memory processing ---
                 try {
+                    // Set forceImportant=true for document MIME types (per Step 6 in MigrationPlan.md)
+                    const forceImportant = true;
+                    
                     documentContentRawDataRecord = await recordRawData({
                         content: fileResult.text,
                         contentType: 'uploaded_document_content',
@@ -336,9 +339,25 @@ exports.uploadFile = (req, res, next) => { // Add next
                         sessionId: session_id,
                         perspectiveOwnerId: userId,
                         subjectId: userId,
-                        importanceScore: 0.8 // Explicit importance for document content
+                        importanceScore: 0.8, // Explicit importance for document content
+                        forceImportant: forceImportant // Flag to ensure all chunks are kept
                     });
-                    logger.info('Document content recorded for memory processing', { rawDataId: documentContentRawDataRecord.id });
+                    logger.info('Document content recorded for memory processing', { 
+                        rawDataId: documentContentRawDataRecord.id,
+                        forceImportant: forceImportant
+                    });
+                    
+                    // Trigger immediate consolidation for document uploads
+                    try {
+                        // Import the consolidationAgent or access the queue
+                        const consolidationAgent = require('../services/consolidationAgent');
+                        // Try to add to the orphan queue to trigger consolidation
+                        await consolidationAgent.processOrphanChunks(userId);
+                        logger.info(`[ConsolidationAgent] Triggered immediate consolidation for user ${userId} after document upload`);
+                    } catch (queueError) {
+                        // Just log, don't fail the upload
+                        logger.error(`[ConsolidationAgent] Failed to trigger consolidation after document upload: ${queueError.message}`);
+                    }
                 } catch (dbError) {
                     handleServiceError(dbError, 'recording document content'); // Log only
                 }
