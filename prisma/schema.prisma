@@ -1,0 +1,217 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String                   @id @default(uuid()) @db.Uuid
+  email             String                   @unique
+  firstName         String?
+  lastName          String?
+  passwordHash      String
+  createdAt         DateTime                 @default(now())
+  phone             String?
+  wechat_id         String?
+  subscription_plan String?
+  gender            String?
+  age               Int?
+  city              String?
+  episodes          Episode[]
+  ontologyProposals OntologyChangeProposal[]
+  rawData           RawData[]
+  semanticChunks    SemanticChunk[]
+  thoughts          Thought[]
+}
+
+model RawData {
+  id                 String          @id @default(cuid())
+  content            String
+  contentType        String
+  topicKey           String?
+  createdAt          DateTime        @default(now())
+  userId             String          @db.Uuid
+  sessionId          String
+  perspectiveOwnerId String          @db.Uuid
+  subjectId          String?         @db.Uuid
+  importanceScore    Float?
+  processedAt        DateTime?
+  processingError    String?
+  processingStatus   String          @default("pending")
+  embeddings         Embedding[]
+  episodes           Episode[]
+  user               User            @relation(fields: [userId], references: [id])
+  chunks             SemanticChunk[]
+  thoughts           Thought[]
+
+  @@index([userId])
+  @@index([sessionId])
+  @@index([perspectiveOwnerId])
+  @@index([createdAt])
+}
+
+model SemanticChunk {
+  id                 String      @id @default(cuid())
+  rawDataId          String
+  content            String
+  summary            String?
+  chunkIndex         Int
+  importanceScore    Float?
+  createdAt          DateTime    @default(now())
+  perspectiveOwnerId String      @db.Uuid
+  subjectId          String?     @db.Uuid
+  topicKey           String?
+  embeddings         Embedding[]
+  user               User        @relation(fields: [perspectiveOwnerId], references: [id])
+  rawData            RawData     @relation(fields: [rawDataId], references: [id], onDelete: Cascade)
+  thoughts           Thought[]
+
+  @@unique([rawDataId, chunkIndex])
+  @@index([perspectiveOwnerId])
+  @@index([topicKey])
+  @@index([createdAt])
+}
+
+model Embedding {
+  id                 String            @id @default(cuid())
+  vector             Float[]
+  dimension          Int
+  content            String
+  summary            String
+  importanceScore    Float
+  modelConfidence    Float             @default(1.0)
+  embeddingType      String
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  rawDataId          String?
+  chunkId            String?
+  episodeId          String?
+  thoughtId          String?
+  perspectiveOwnerId String            @db.Uuid
+  subjectId          String?           @db.Uuid
+  linkedNodeIds      String[]          @default([])
+  vectorCollection   String
+  vectorId           String
+  isIncremental      Boolean           @default(false)
+  chunk              SemanticChunk?    @relation(fields: [chunkId], references: [id])
+  episode            Episode?          @relation(fields: [episodeId], references: [id])
+  rawData            RawData?          @relation(fields: [rawDataId], references: [id])
+  updates            EmbeddingUpdate[]
+  thought            Thought?
+}
+
+model Episode {
+  id                 String      @id @default(cuid())
+  rawDataId          String
+  title              String
+  narrative          String
+  occurredAt         DateTime?
+  emotionTags        String[]
+  createdAt          DateTime    @default(now())
+  userId             String      @db.Uuid
+  perspectiveOwnerId String      @db.Uuid
+  subjectId          String?     @db.Uuid
+  linkedNodeIds      String[]    @default([])
+  topicKey           String?
+  embeddings         Embedding[]
+  rawData            RawData     @relation(fields: [rawDataId], references: [id])
+  user               User        @relation(fields: [userId], references: [id])
+  thoughts           Thought[]
+
+  @@index([topicKey])
+}
+
+model Thought {
+  id                 String         @id @default(cuid())
+  title              String
+  content            String
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  modelConfidence    Float          @default(1.0)
+  subjectType        String
+  subjectName        String
+  rawDataId          String?
+  chunkId            String?
+  embeddingId        String?        @unique
+  episodeId          String?
+  perspectiveOwnerId String         @db.Uuid
+  subjectId          String?        @db.Uuid
+  linkedNodeIds      String[]       @default([])
+  chunk              SemanticChunk? @relation(fields: [chunkId], references: [id])
+  embedding          Embedding?     @relation(fields: [embeddingId], references: [id])
+  episode            Episode?       @relation(fields: [episodeId], references: [id])
+  user               User           @relation(fields: [perspectiveOwnerId], references: [id])
+  rawData            RawData?       @relation(fields: [rawDataId], references: [id])
+}
+
+model EmbeddingUpdate {
+  id              String    @id @default(cuid())
+  embeddingId     String
+  previousVector  Float[]
+  similarityScore Float?
+  updateReason    String
+  sourceId        String?
+  createdAt       DateTime  @default(now())
+  embedding       Embedding @relation(fields: [embeddingId], references: [id])
+
+  @@index([embeddingId])
+}
+
+model OntologyVersion {
+  id          String     @id @default(cuid())
+  name        String
+  description String?
+  createdAt   DateTime   @default(now())
+  active      Boolean    @default(true)
+  edgeTypes   EdgeType[]
+  nodeTypes   NodeType[]
+}
+
+model NodeType {
+  id                String          @id @default(cuid())
+  name              String
+  description       String?
+  properties        Json?
+  synonyms          String[]
+  ontologyVersionId String
+  createdAt         DateTime        @default(now())
+  ontologyVersion   OntologyVersion @relation(fields: [ontologyVersionId], references: [id])
+
+  @@index([ontologyVersionId])
+}
+
+model EdgeType {
+  id                String          @id @default(cuid())
+  name              String
+  description       String?
+  fromNodeTypes     String[]
+  toNodeTypes       String[]
+  properties        Json?
+  ontologyVersionId String
+  createdAt         DateTime        @default(now())
+  ontologyVersion   OntologyVersion @relation(fields: [ontologyVersionId], references: [id])
+
+  @@index([ontologyVersionId])
+}
+
+model OntologyChangeProposal {
+  id                 String    @id @default(cuid())
+  type               String
+  description        String
+  proposedDefinition Json
+  justification      String
+  examples           String[]
+  status             String    @default("pending")
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  userId             String    @db.Uuid
+  reviewedById       String?   @db.Uuid
+  reviewedAt         DateTime?
+  user               User      @relation(fields: [userId], references: [id])
+
+  @@index([status])
+  @@index([userId])
+}

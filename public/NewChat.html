@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chat with Dot - 2Dots1Line</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/chat.css">
+  <script src="https://unpkg.com/feather-icons"></script>
+  <style>
+    .chat-nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.5rem 1rem;
+      background-color: #f8f9fa;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    
+    .chat-nav a {
+      color: #4f46e5;
+      text-decoration: none;
+      font-weight: 500;
+    }
+    
+    .chat-nav a:hover {
+      text-decoration: underline;
+    }
+    
+    .chat-nav .logo {
+      display: flex;
+      align-items: center;
+      font-weight: 600;
+      font-size: 1.25rem;
+    }
+    
+    .chat-nav .logo-icon {
+      width: 1.5rem;
+      height: 1.5rem;
+      margin-right: 0.5rem;
+      color: #4f46e5;
+    }
+
+    /* File upload and attachment styles */
+    .chat-input-container {
+      position: relative;
+    }
+
+    .chat-actions {
+      display: flex;
+      align-items: center;
+      padding: 0.5rem;
+      border-top: 1px solid #e2e8f0;
+      background-color: #f8f9fa;
+    }
+
+    .chat-action-button {
+      background: none;
+      border: none;
+      color: #4f46e5;
+      margin-right: 0.5rem;
+      padding: 0.5rem;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .chat-action-button:hover {
+      background-color: #e8eafd;
+    }
+
+    .chat-action-button:disabled {
+      color: #a0aec0;
+      cursor: not-allowed;
+    }
+
+    .file-input {
+      display: none;
+    }
+
+    .attachment-preview {
+      display: flex;
+      align-items: center;
+      padding: 0.5rem;
+      margin-bottom: 0.5rem;
+      background-color: #f8f9fa;
+      border-radius: 0.5rem;
+      font-size: 0.875rem;
+    }
+
+    .attachment-preview img {
+      max-width: 100px;
+      max-height: 100px;
+      border-radius: 0.25rem;
+      margin-right: 0.5rem;
+    }
+
+    .attachment-preview .file-name {
+      flex-grow: 1;
+      margin-right: 0.5rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .attachment-preview .remove-button {
+      background: none;
+      border: none;
+      color: #e53e3e;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0.25rem;
+    }
+
+    .attachment-preview .remove-button:hover {
+      background-color: #fed7d7;
+      border-radius: 50%;
+    }
+
+    .attachments-container {
+      padding: 0 1rem;
+    }
+
+    /* Voice recording indicator */
+    .recording-indicator {
+      display: none;
+      align-items: center;
+      padding: 0.5rem;
+      color: #e53e3e;
+      font-size: 0.875rem;
+      animation: pulse 1.5s infinite;
+    }
+
+    @keyframes pulse {
+      0% { opacity: 1; }
+      50% { opacity: 0.5; }
+      100% { opacity: 1; }
+    }
+
+    /* Message with image */
+    .message-image {
+      max-width: 250px;
+      max-height: 250px;
+      border-radius: 0.5rem;
+      margin-top: 0.5rem;
+      cursor: pointer;
+      transition: transform 0.2s;
+    }
+
+    .message-image:hover {
+      transform: scale(1.05);
+    }
+
+    /* File attachment in message */
+    .message-file {
+      display: flex;
+      align-items: center;
+      padding: 0.5rem;
+      background-color: #f8f9fa;
+      border-radius: 0.5rem;
+      margin-top: 0.5rem;
+      font-size: 0.875rem;
+      max-width: 250px;
+    }
+
+    .message-file-icon {
+      color: #4f46e5;
+      margin-right: 0.5rem;
+    }
+
+    .message-file-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .message-file-download {
+      margin-left: auto;
+      color: #4f46e5;
+      cursor: pointer;
+    }
+
+    .message-file-download:hover {
+      color: #3730a3;
+    }
+
+    /* Add styles for system messages */
+    .system-message {
+      background-color: #f3f4f6;
+      border-left: 3px solid #4b5563;
+      font-style: italic;
+    }
+    
+    .system-message .message-content {
+      color: #4b5563;
+    }
+    
+    /* --- ADD CSS for Processing Status Bar --- */
+    .processing-indicator {
+      display: flex;
+      align-items: center;
+      padding: 0.5rem 1rem; /* Match system message padding */
+    }
+
+    .processing-bar-container {
+      width: 100%;
+      height: 8px;
+      background-color: #e5e7eb; /* Light gray background */
+      border-radius: 4px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .processing-bar {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+      background: linear-gradient(
+        -45deg, 
+        #a78bfa, /* Violet */
+        #7c3aed, /* Purple */
+        #4f46e5, /* Indigo */
+        #3b82f6  /* Blue */
+      );
+      background-size: 400% 400%;
+      animation: gradientShift 3s ease infinite;
+    }
+
+    @keyframes gradientShift {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+    /* --- END CSS --- */
+
+    /* Auth overlay styles */
+    .auth-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: rgba(255, 255, 255, 0.95);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      padding: 2rem;
+      text-align: center;
+    }
+    
+    .auth-overlay h2 {
+      font-size: 1.5rem;
+      margin-bottom: 1rem;
+      color: #4f46e5;
+    }
+    
+    .auth-overlay p {
+      margin-bottom: 2rem;
+      max-width: 500px;
+      line-height: 1.6;
+    }
+    
+    .auth-buttons {
+      display: flex;
+      gap: 1rem;
+    }
+    
+    .auth-button {
+      padding: 0.75rem 1.5rem;
+      border-radius: 0.5rem;
+      font-weight: 500;
+      cursor: pointer;
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+    
+    .auth-button-primary {
+      background-color: #4f46e5;
+      color: white;
+    }
+    
+    .auth-button-primary:hover {
+      background-color: #4338ca;
+    }
+    
+    .auth-button-secondary {
+      background-color: #f3f4f6;
+      color: #4b5563;
+    }
+    
+    .auth-button-secondary:hover {
+      background-color: #e5e7eb;
+    }
+  </style>
+</head>
+<body>
+  <!-- Single Auth Overlay -->
+  <div class="auth-overlay" id="authOverlay" style="display: none;">
+    <h2>Authentication Required</h2>
+    <p>To chat with Dot, our AI companion, you need to sign in. Creating an account allows us to personalize your experience, remember your conversations, and build a meaningful memory system for you.</p>
+    <div class="auth-buttons">
+      <a href="/" class="auth-button auth-button-primary">Sign In / Create Account</a>
+      <button id="debugBypassAuth" class="auth-button auth-button-secondary">Debug: Use Dev Mode</button>
+    </div>
+  </div>
+
+  <!-- Simple Navigation -->
+  <div class="chat-nav">
+    <div class="logo">
+      <i data-feather="zap" class="logo-icon"></i> 
+      2Dots1Line
+    </div>
+    <div class="nav-actions">
+      <button id="new-chat-button" class="nav-action-button" title="Start a new conversation">
+        <i data-feather="plus-circle"></i> New Chat
+      </button>
+      <a href="/">Back to Home</a>
+    </div>
+  </div>
+
+  <div class="chat-container">
+    <div class="chat-messages"></div>
+    
+    <div class="attachments-container" id="attachments-container"></div>
+    
+    <div class="chat-actions">
+      <button id="attach-file-button" class="chat-action-button" title="Attach File">
+        <i data-feather="paperclip"></i>
+      </button>
+      <button id="attach-image-button" class="chat-action-button" title="Attach Image">
+        <i data-feather="image"></i>
+      </button>
+      <button id="voice-input-button" class="chat-action-button" title="Voice Input">
+        <i data-feather="mic"></i>
+      </button>
+      
+      <!-- Recording indicator shown when voice input is active -->
+      <div id="recording-indicator" class="recording-indicator" style="display: none;">
+        <div class="recording-indicator-dot"></div>
+        <span>Recording...</span>
+      </div>
+    </div>
+    
+    <form class="chat-input-form">
+      <div class="chat-input-container">
+        <input type="text" id="message-input" class="chat-input" placeholder="Type your message..." autocomplete="off">
+        <button type="submit" class="chat-send-button">
+          <i data-feather="send"></i>
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Hidden file inputs -->
+  <input type="file" id="file-input" class="file-input" accept=".pdf,.doc,.docx,.txt">
+  <input type="file" id="image-input" class="file-input" accept="image/*">
+  
+  <script src="js/chat.js"></script>
+  <script>
+    // Initialize Feather icons and setup chat
+    document.addEventListener('DOMContentLoaded', () => {
+      feather.replace();
+      
+      // Create a new session when the page loads
+      if (typeof createNewSession === 'function') {
+        createNewSession();
+      }
+      
+      // Get the API base URL dynamically based on the current window location
+      // Always use port 3002 for development
+      const port = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? '3002' : window.location.port;
+      window.apiBaseUrl = `${window.location.protocol}//${window.location.hostname}:${port}/api`;
+      console.log('API Base URL:', window.apiBaseUrl);
+      
+      // Initialize chat interface
+      const chatMessages = document.querySelector('.chat-messages');
+      const chatInput = document.getElementById('message-input');
+      const sendButton = document.querySelector('.chat-send-button');
+      const fileInput = document.getElementById('file-input');
+      const imageInput = document.getElementById('image-input'); 
+      const attachFileButton = document.getElementById('attach-file-button');
+      const attachImageButton = document.getElementById('attach-image-button');
+      const voiceInputButton = document.getElementById('voice-input-button');
+      const attachmentsContainer = document.getElementById('attachments-container');
+      const recordingIndicator = document.getElementById('recording-indicator');
+      const authOverlay = document.getElementById('authOverlay');
+      const newChatButton = document.getElementById('new-chat-button');
+      
+      // Set up New Chat button
+      if (newChatButton) {
+        newChatButton.addEventListener('click', () => {
+          // Clear the chat interface
+          if (chatMessages) {
+            chatMessages.innerHTML = '';
+          }
+          
+          // Create a new session
+          if (typeof createNewSession === 'function') {
+            createNewSession();
+          }
+          
+          // Add initial greeting
+          if (typeof addBotMessage === 'function') {
+            addBotMessage("Hi! I'm Dot, your AI companion. How can I help you today?");
+          }
+          
+          // Focus the input field
+          if (chatInput) {
+            chatInput.value = '';
+            chatInput.focus();
+          }
+        });
+      }
+      
+      // Set up form submission
+      const messageForm = document.querySelector('.chat-input-form');
+      messageForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        sendMessage();
+      });
+      
+      // Debug mode for localhost
+      if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        console.log('DEV MODE: Allowing access on localhost');
+        if (authOverlay) {
+          authOverlay.style.display = 'none';
+        }
+        // Set a debug token if none exists
+        if (!sessionStorage.getItem('token')) {
+          const debugToken = 'debug-token-' + Date.now();
+          sessionStorage.setItem('token', debugToken);
+        }
+      }
+      
+      // Focus input field
+      if (chatInput) {
+        chatInput.focus();
+      }
+    });
+  </script>
+</body>
+</html> 
