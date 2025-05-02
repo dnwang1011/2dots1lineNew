@@ -2,7 +2,9 @@
 // Service for managing the memory processing pipeline
 
 const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+// Replace local Prisma instance with singleton
+// const prisma = new PrismaClient();
+const { prisma } = require('../db/prisma'); // Use the singleton instance
 const weaviateClientUtil = require('../utils/weaviateClient'); // Import centralized client utility
 const { encode, decode } = require('gpt-tokenizer'); // For semantic chunking
 const aiService = require('./ai.service'); // For embedding generation
@@ -25,6 +27,84 @@ const WEAVIATE_BATCH_SIZE = 25; // Number of items to batch when importing to We
 /**
  * Checks if the Weaviate schema has the required classes and creates them if needed
  */
+async function inspectWeaviateSchema(client) {
+  if (!client) {
+    logger.warn('No client available for inspectWeaviateSchema');
+    return;
+  }
+  
+  try {
+    logger.info('[Debug] Running detailed Weaviate schema inspection');
+    
+    // Get full schema
+    const fullSchema = await client.schema.getter().do();
+    if (!fullSchema?.classes?.length) {
+      logger.info('[Debug] No classes found in Weaviate schema');
+      return;
+    }
+    
+    // Check API version
+    try {
+      const meta = await client.misc.metaGetter().do();
+      logger.info(`[Debug] Weaviate API version: ${meta.version}`);
+    } catch (err) {
+      logger.error(`[Debug] Failed to get Weaviate version: ${err.message}`);
+    }
+    
+    // Look for Memory class since we know it works
+    const memoryClass = fullSchema.classes.find(c => c.class === 'Memory');
+    if (memoryClass) {
+      logger.info(`[Debug] Found Memory class with properties: ${JSON.stringify(memoryClass)}`);
+      // Check if it has vectorIndexConfig
+      if (memoryClass.vectorIndexConfig) {
+        logger.info(`[Debug] Memory class vectorIndexConfig: ${JSON.stringify(memoryClass.vectorIndexConfig)}`);
+      } else {
+        logger.info('[Debug] Memory class has NO vectorIndexConfig defined');
+      }
+    } else {
+      logger.info('[Debug] Memory class not found');
+    }
+    
+    // Try to create a minimal test class
+    try {
+      const testClassName = 'WeaviateTestClass';
+      // Check if test class exists
+      const existingClasses = fullSchema.classes.map(c => c.class);
+      if (existingClasses.includes(testClassName)) {
+        // Delete it first
+        await client.schema.classDeleter().withClassName(testClassName).do();
+        logger.info(`[Debug] Deleted existing ${testClassName}`);
+      }
+      
+      // Create minimal test class
+      const minimalClassObj = {
+        class: testClassName,
+        description: 'Test class for diagnostics',
+        vectorizer: 'none',
+        properties: [
+          {
+            name: 'testProp',
+            description: 'Test property',
+            dataType: ['text']
+          }
+        ]
+      };
+      
+      await client.schema.classCreator().withClass(minimalClassObj).do();
+      logger.info(`[Debug] Successfully created ${testClassName}`);
+      
+      // Clean up 
+      await client.schema.classDeleter().withClassName(testClassName).do();
+      logger.info(`[Debug] Cleaned up ${testClassName}`);
+    } catch (e) {
+      logger.error(`[Debug] Test class creation failed: ${e.message}`);
+    }
+    
+  } catch (error) {
+    logger.error(`[Debug] Schema inspection failed: ${error.message}`);
+  }
+}
+
 async function checkWeaviateSchema() {
   const client = weaviateClientUtil.getClient(); // Get client from utility
   if (!client) {
@@ -34,6 +114,9 @@ async function checkWeaviateSchema() {
 
   logger.info('[MemoryManager] Checking Weaviate schema for V2 memory models...');
   
+  // Add diagnostics
+  await inspectWeaviateSchema(client);
+  
   try {
     // Get the schema and check for required classes
     const schema = await client.schema.getter().do();
@@ -41,13 +124,31 @@ async function checkWeaviateSchema() {
     
     logger.info(`[MemoryManager] Found existing classes: ${existingClasses.join(', ') || 'none'}`);
     
-    // Check for legacy Memory class - mark for deletion
-    const hasLegacyMemoryClass = existingClasses.includes('Memory');
-    if (hasLegacyMemoryClass) {
-      logger.info('[MemoryManager] Legacy Memory class found, will remove after migration is complete.');
-      // Uncomment the line below when ready to delete the Memory class
-      // await client.schema.classDeleter().withClassName('Memory').do();
+    // --- V1 Cleanup Start ---
+    // Attempt to delete the legacy Memory class if it exists
+    if (existingClasses.includes('Memory')) {
+        logger.info('[MemoryManager] Attempting to delete legacy Memory class...');
+        try {
+            await client.schema.classDeleter().withClassName('Memory').do();
+            logger.info('[MemoryManager] Successfully deleted legacy Memory class.');
+            // Remove 'Memory' from existingClasses array if deletion was successful
+            const index = existingClasses.indexOf('Memory');
+            if (index > -1) {
+                existingClasses.splice(index, 1);
+            }
+        } catch (deleteError) {
+            // We expect 404 if it's already gone, log other errors
+            if (deleteError.statusCode !== 404) {
+                logger.error('[MemoryManager] Failed to delete legacy Memory class:', { error: deleteError });
+                // Decide if this is critical. For now, we'll proceed.
+            } else {
+                logger.info('[MemoryManager] Legacy Memory class not found or already deleted.');
+            }
+        }
+    } else {
+        logger.info('[MemoryManager] Legacy Memory class not found.');
     }
+    // --- V1 Cleanup End ---
     
     // Check for new V2 classes
     let needToCreateChunkEmbeddingClass = !existingClasses.includes('ChunkEmbedding');
@@ -60,6 +161,8 @@ async function checkWeaviateSchema() {
       await createChunkEmbeddingClass(client);
     } else {
       logger.info('[MemoryManager] ChunkEmbedding class exists.');
+      // Check if any properties are missing and add them
+      await checkMissingProperties(client, 'ChunkEmbedding', existingClasses);
     }
     
     if (needToCreateEpisodeEmbeddingClass) {
@@ -67,6 +170,7 @@ async function checkWeaviateSchema() {
       await createEpisodeEmbeddingClass(client);
     } else {
       logger.info('[MemoryManager] EpisodeEmbedding class exists.');
+      await checkMissingProperties(client, 'EpisodeEmbedding', existingClasses);
     }
     
     if (needToCreateThoughtEmbeddingClass) {
@@ -74,9 +178,10 @@ async function checkWeaviateSchema() {
       await createThoughtEmbeddingClass(client);
     } else {
       logger.info('[MemoryManager] ThoughtEmbedding class exists.');
+      await checkMissingProperties(client, 'ThoughtEmbedding', existingClasses);
     }
     
-    // Keep checking the other classes for backward compatibility
+    // Update checking for KnowledgeNode/Relationship to also standardize vector config
     let needToCreateKnowledgeNodeClass = !existingClasses.includes('KnowledgeNode');
     let needToCreateRelationshipClass = !existingClasses.includes('Relationship');
     
@@ -85,6 +190,7 @@ async function checkWeaviateSchema() {
       await createKnowledgeNodeClass(client);
     } else {
       logger.info('[MemoryManager] KnowledgeNode class exists.');
+      await checkMissingProperties(client, 'KnowledgeNode', existingClasses);
     }
     
     if (needToCreateRelationshipClass) {
@@ -92,6 +198,7 @@ async function checkWeaviateSchema() {
       await createRelationshipClass(client);
     } else {
       logger.info('[MemoryManager] Relationship class exists.');
+      await checkMissingProperties(client, 'Relationship', existingClasses);
     }
     
     logger.info('[MemoryManager] Weaviate schema check completed successfully');
@@ -110,12 +217,12 @@ async function checkWeaviateSchema() {
         logger.info('[MemoryManager] Full schema created successfully');
         return true;
       } catch (createError) {
-        logger.error('[MemoryManager] Failed to create schema:', { error: createError });
+        logger.error(`[MemoryManager] Failed to create schema: ${createError.message}`, { error: createError });
         return false;
       }
     }
     
-    logger.error('[MemoryManager] Error checking Weaviate schema:', { error });
+    logger.error(`[MemoryManager] Error checking Weaviate schema: ${error.message}`, { error });
     return false;
   }
 }
@@ -151,6 +258,12 @@ async function checkMissingProperties(client, className, existingClasses) {
          requiredProperties = ['entity', 'type', 'description', 'metadata', 'sourceIds', 'createdAt', 'updatedAt'];
       } else if (className === 'Relationship') {
          requiredProperties = ['relationType', 'sourceNodeId', 'targetNodeId', 'confidence', 'metadata', 'sourceIds', 'createdAt'];
+      } else if (className === 'ChunkEmbedding') {
+         requiredProperties = ['chunkDbId', 'text', 'rawDataId', 'importance', 'userId'];
+      } else if (className === 'EpisodeEmbedding') {
+         requiredProperties = ['episodeDbId', 'title', 'userId'];
+      } else if (className === 'ThoughtEmbedding') {
+         requiredProperties = ['thoughtDbId', 'name', 'userId'];
       }
       
       const missingProps = requiredProperties.filter(prop => !existingProps.includes(prop));
@@ -185,27 +298,46 @@ async function addPropertyToClass(client, className, propName) {
     // Define property configuration based on property name
     // (This switch statement needs to be comprehensive for all potential missing props)
     switch (propName) {
+      // Common properties
+      case 'userId': propertyConfig = { name: propName, dataType: ['text'], description: 'ID of the user this memory belongs to' }; break;
+      case 'importance': propertyConfig = { name: propName, dataType: ['number'], description: 'Importance score (0-1)' }; break;
+      case 'createdAt': propertyConfig = { name: propName, dataType: ['date'] }; break;
+      
+      // Memory class properties
       case 'content': propertyConfig = { name: propName, dataType: ['text'] }; break;
       case 'rawDataId': propertyConfig = { name: propName, dataType: ['text'] }; break; // Use text
       case 'chunkId': propertyConfig = { name: propName, dataType: ['text'] }; break;
-      case 'importance': propertyConfig = { name: propName, dataType: ['number'] }; break;
       case 'dataType': propertyConfig = { name: propName, dataType: ['text'] }; break;
       case 'metadata': propertyConfig = { name: propName, dataType: ['text'] }; break;
-      case 'createdAt': propertyConfig = { name: propName, dataType: ['date'] }; break;
       case 'contextBefore': propertyConfig = { name: propName, dataType: ['text'] }; break;
       case 'contextAfter': propertyConfig = { name: propName, dataType: ['text'] }; break;
-      case 'userId': propertyConfig = { name: propName, dataType: ['text'], description: 'ID of the user this memory belongs to' }; break;
-      // Add cases for KnowledgeNode props
+      
+      // KnowledgeNode props
       case 'entity': propertyConfig = { name: propName, dataType: ['text'] }; break;
       case 'type': propertyConfig = { name: propName, dataType: ['text'] }; break;
       case 'description': propertyConfig = { name: propName, dataType: ['text'] }; break;
       case 'sourceIds': propertyConfig = { name: propName, dataType: ['text[]'] }; break;
       case 'updatedAt': propertyConfig = { name: propName, dataType: ['date'] }; break;
-      // Add cases for Relationship props
+      
+      // Relationship props
       case 'relationType': propertyConfig = { name: propName, dataType: ['text'] }; break;
       case 'sourceNodeId': propertyConfig = { name: propName, dataType: ['text'] }; break;
       case 'targetNodeId': propertyConfig = { name: propName, dataType: ['text'] }; break;
       case 'confidence': propertyConfig = { name: propName, dataType: ['number'] }; break;
+      
+      // ChunkEmbedding props
+      case 'chunkDbId': propertyConfig = { name: propName, dataType: ['text'], description: 'ID of the ChunkEmbedding in the database' }; break;
+      case 'text': propertyConfig = { name: propName, dataType: ['text'], description: 'The full text content of the chunk' }; break;
+      
+      // EpisodeEmbedding props
+      case 'episodeDbId': propertyConfig = { name: propName, dataType: ['text'], description: 'ID of the Episode in the database' }; break;
+      case 'title': propertyConfig = { name: propName, dataType: ['text'], description: 'Title of the episode' }; break;
+      case 'narrative': propertyConfig = { name: propName, dataType: ['text'], description: 'Narrative description of the episode' }; break;
+      case 'occurredAt': propertyConfig = { name: propName, dataType: ['date'], description: 'When the episode occurred' }; break;
+      
+      // ThoughtEmbedding props
+      case 'thoughtDbId': propertyConfig = { name: propName, dataType: ['text'], description: 'ID of the Thought in the database' }; break;
+      case 'name': propertyConfig = { name: propName, dataType: ['text'], description: 'Short label for the thought' }; break;
 
       default:
         logger.warn(`[MemoryManager] Unknown property ${propName} requested in addPropertyToClass, skipping`); // Use logger
@@ -315,6 +447,10 @@ async function createKnowledgeNodeClass(client) {
       class: 'KnowledgeNode',
       description: 'A node representing an entity or concept in the knowledge graph',
       vectorizer: 'none', // Set vectorizer to none
+      vectorIndexType: 'hnsw', // Standardized with other classes
+      vectorIndexConfig: {
+        distance: 'cosine' // Standardized distance metric
+      },
       properties: [
         {
           name: 'entity',
@@ -377,6 +513,10 @@ async function createRelationshipClass(client) {
       class: 'Relationship',
       description: 'A relationship between two knowledge nodes in the graph',
       vectorizer: 'none', // Set vectorizer to none
+      vectorIndexType: 'hnsw', // Standardized with other classes
+      vectorIndexConfig: {
+        distance: 'cosine' // Standardized distance metric
+      },
       properties: [
         {
           name: 'relationType',
@@ -435,13 +575,19 @@ async function createChunkEmbeddingClass(client) {
     throw new Error('Weaviate client is required to create class');
   }
   try {
+    logger.info('[MemoryManager] Creating ChunkEmbedding class with properties: chunkDbId, text, rawDataId, importance, userId');
+    
     const classObj = {
       class: 'ChunkEmbedding',
       description: 'A memory chunk with its associated embedding vector',
       vectorizer: 'none', // Set vectorizer to none as we provide vectors manually
+      vectorIndexType: 'hnsw', // Explicitly setting to match Memory class
+      vectorIndexConfig: {
+        distance: 'cosine', // Using cosine similarity like Memory class has
+      },
       properties: [
         {
-          name: 'id',
+          name: 'chunkDbId',
           description: 'ID of the ChunkEmbedding in the database',
           dataType: ['text'],
         },
@@ -461,21 +607,6 @@ async function createChunkEmbeddingClass(client) {
           dataType: ['number']
         },
         {
-          name: 'dataType',
-          description: 'Type of data (message, image_analysis, document, etc.)',
-          dataType: ['text']
-        },
-        {
-          name: 'metadata',
-          description: 'Additional metadata about the memory',
-          dataType: ['text']
-        },
-        {
-          name: 'createdAt',
-          description: 'Timestamp when the memory was created',
-          dataType: ['date']
-        },
-        {
           name: 'userId',
           description: 'ID of the user this memory belongs to',
           dataType: ['text']
@@ -483,10 +614,20 @@ async function createChunkEmbeddingClass(client) {
       ]
     };
     
-    await client.schema.classCreator().withClass(classObj).do();
-    logger.info('[MemoryManager] Created ChunkEmbedding class in Weaviate');
+    logger.info(`[MemoryManager] Calling Weaviate schema.classCreator() for ChunkEmbedding`);
+    
+    try {
+      const result = await client.schema.classCreator().withClass(classObj).do();
+      logger.info('[MemoryManager] Created ChunkEmbedding class in Weaviate successfully:', result);
+    } catch (innerError) {
+      logger.error(`[MemoryManager] Weaviate API error creating ChunkEmbedding class: ${innerError.message}`);
+      if (innerError.response) {
+        logger.error(`[MemoryManager] Status: ${innerError.response.status}, Response body: ${JSON.stringify(innerError.response.data || {})}`);
+      }
+      throw innerError;
+    }
   } catch (error) {
-    logger.error('[MemoryManager] Error creating ChunkEmbedding class:', { error });
+    logger.error(`[MemoryManager] Error creating ChunkEmbedding class: ${error.message}`, { error });
     throw error;
   }
 }
@@ -501,13 +642,19 @@ async function createEpisodeEmbeddingClass(client) {
     throw new Error('Weaviate client is required to create class');
   }
   try {
+    logger.info('[MemoryManager] Creating EpisodeEmbedding class with properties: episodeDbId, title, userId');
+    
     const classObj = {
       class: 'EpisodeEmbedding',
       description: 'An episode with its centroid vector',
       vectorizer: 'none', // Set vectorizer to none as we provide vectors manually
+      vectorIndexType: 'hnsw', // Explicitly setting to match Memory class
+      vectorIndexConfig: {
+        distance: 'cosine', // Using cosine similarity like Memory class has
+      },
       properties: [
         {
-          name: 'id',
+          name: 'episodeDbId',
           description: 'ID of the Episode in the database',
           dataType: ['text'],
         },
@@ -517,21 +664,6 @@ async function createEpisodeEmbeddingClass(client) {
           dataType: ['text'],
         },
         {
-          name: 'narrative',
-          description: 'Narrative description of the episode',
-          dataType: ['text']
-        },
-        {
-          name: 'occurredAt',
-          description: 'When the episode occurred',
-          dataType: ['date']
-        },
-        {
-          name: 'createdAt',
-          description: 'Timestamp when the episode was created',
-          dataType: ['date']
-        },
-        {
           name: 'userId',
           description: 'ID of the user this episode belongs to',
           dataType: ['text']
@@ -539,10 +671,20 @@ async function createEpisodeEmbeddingClass(client) {
       ]
     };
     
-    await client.schema.classCreator().withClass(classObj).do();
-    logger.info('[MemoryManager] Created EpisodeEmbedding class in Weaviate');
+    logger.info(`[MemoryManager] Calling Weaviate schema.classCreator() for EpisodeEmbedding`);
+    
+    try {
+      const result = await client.schema.classCreator().withClass(classObj).do();
+      logger.info('[MemoryManager] Created EpisodeEmbedding class in Weaviate successfully:', result);
+    } catch (innerError) {
+      logger.error(`[MemoryManager] Weaviate API error creating EpisodeEmbedding class: ${innerError.message}`);
+      if (innerError.response) {
+        logger.error(`[MemoryManager] Status: ${innerError.response.status}, Response body: ${JSON.stringify(innerError.response.data || {})}`);
+      }
+      throw innerError;
+    }
   } catch (error) {
-    logger.error('[MemoryManager] Error creating EpisodeEmbedding class:', { error });
+    logger.error(`[MemoryManager] Error creating EpisodeEmbedding class: ${error.message}`, { error });
     throw error;
   }
 }
@@ -557,13 +699,19 @@ async function createThoughtEmbeddingClass(client) {
     throw new Error('Weaviate client is required to create class');
   }
   try {
+    logger.info('[MemoryManager] Creating ThoughtEmbedding class with properties: thoughtDbId, name, userId');
+    
     const classObj = {
       class: 'ThoughtEmbedding',
       description: 'A thought insight with its vector',
       vectorizer: 'none', // Set vectorizer to none as we provide vectors manually
+      vectorIndexType: 'hnsw', // Explicitly setting to match Memory class
+      vectorIndexConfig: {
+        distance: 'cosine', // Using cosine similarity like Memory class has
+      },
       properties: [
         {
-          name: 'id',
+          name: 'thoughtDbId',
           description: 'ID of the Thought in the database',
           dataType: ['text'],
         },
@@ -573,16 +721,6 @@ async function createThoughtEmbeddingClass(client) {
           dataType: ['text'],
         },
         {
-          name: 'description',
-          description: 'Free-form insight text',
-          dataType: ['text']
-        },
-        {
-          name: 'createdAt',
-          description: 'Timestamp when the thought was created',
-          dataType: ['date']
-        },
-        {
           name: 'userId',
           description: 'ID of the user this thought belongs to',
           dataType: ['text']
@@ -590,10 +728,20 @@ async function createThoughtEmbeddingClass(client) {
       ]
     };
     
-    await client.schema.classCreator().withClass(classObj).do();
-    logger.info('[MemoryManager] Created ThoughtEmbedding class in Weaviate');
+    logger.info(`[MemoryManager] Calling Weaviate schema.classCreator() for ThoughtEmbedding`);
+    
+    try {
+      const result = await client.schema.classCreator().withClass(classObj).do();
+      logger.info('[MemoryManager] Created ThoughtEmbedding class in Weaviate successfully:', result);
+    } catch (innerError) {
+      logger.error(`[MemoryManager] Weaviate API error creating ThoughtEmbedding class: ${innerError.message}`);
+      if (innerError.response) {
+        logger.error(`[MemoryManager] Status: ${innerError.response.status}, Response body: ${JSON.stringify(innerError.response.data || {})}`);
+      }
+      throw innerError;
+    }
   } catch (error) {
-    logger.error('[MemoryManager] Error creating ThoughtEmbedding class:', { error });
+    logger.error(`[MemoryManager] Error creating ThoughtEmbedding class: ${error.message}`, { error });
     throw error;
   }
 }
@@ -820,7 +968,7 @@ class MemoryManager {
     let score = 0.3; // Base score
     
     // Give a significant boost if the source is a file upload
-    if (sourceType === 'file_upload') {
+    if (sourceType === 'uploaded_file') {
       score += 0.4; // Increased boost for file uploads
     }
     
@@ -829,7 +977,7 @@ class MemoryManager {
     if (length > 200) score += 0.1;
     
     // Questions might be important (less likely in file uploads)
-    if (sourceType !== 'file_upload' && content.includes('?')) score += 0.1;
+    if (sourceType !== 'uploaded_file' && content.includes('?')) score += 0.1;
     
     // Content with dates, times, numbers might be important
     const hasNumbers = /\d+/.test(content);
@@ -854,7 +1002,7 @@ class MemoryManager {
    */
   createImportanceEvaluationPrompt(type, content, metadata) {
     // Use more content for file uploads/documents
-    const contentSampleLength = (type === 'file_upload' || type === 'document') ? 1000 : 500;
+    const contentSampleLength = (type === 'uploaded_file' || type === 'document') ? 1000 : 500;
     
     return `
 You are an importance evaluator for a personal memory system. Your task is to assign an importance score 
@@ -865,7 +1013,7 @@ between 0 and 1 to the given content. Consider these factors:
     *   Emotional content: Strong emotions, significant life events mentioned.
     *   Actionable information: Tasks, deadlines, commitments, plans.
     *   Unique or rare information: Uncommon facts, specialized knowledge, key insights.
-    *   **File/Document Content**: Content originating from files or documents, especially if it contains detailed information, profiles, reports, or structured data. Assign higher scores if the content seems comprehensive or like a reference document.
+    *   **Uploaded File/Document Content**: Content originating from files ('uploaded_file') or documents, especially if it contains detailed information, profiles, reports, or structured data. Assign higher scores if the content seems comprehensive or like a reference document.
 2.  **Moderate Importance (0.5-0.7)**:
     *   Context: Content providing background or context for other memories.
     *   Developing ideas or discussions.
@@ -1193,17 +1341,14 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
           
           // Only prepare Weaviate object if available
           if (isWeaviateAvailable) {
-              const weaviateUuid = uuidv4(); 
+              const weaviateUuid = uuidv4();
               const weaviateObject = {
-                id: weaviateUuid, 
+                id: weaviateUuid,
                 properties: {
-                  id: chunk.id, // Store the ChunkEmbedding ID
+                  chunkDbId: chunk.id, // Store the ChunkEmbedding ID from Prisma using the correct property name
                   text: chunk.text,
                   rawDataId: rawData.id,
                   importance: chunk.importance,
-                  dataType: rawData.contentType,
-                  metadata: JSON.stringify({ userId: chunk.userId, sessionId: rawData.sessionId }),
-                  createdAt: chunk.createdAt?.toISOString() || new Date().toISOString(),
                   userId: chunk.userId
                 },
                 vector: chunk.vector
@@ -1238,7 +1383,7 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
    * @param {string} className - Name of the class to import into
    * @returns {Promise<boolean>} - Success status
    */
-  async batchImportToWeaviate(objects, className = 'Memory') {
+  async batchImportToWeaviate(objects, className = 'ChunkEmbedding') {
     const client = weaviateClientUtil.getClient(); // Get client from utility
     if (!client) {
       logger.warn('[MemoryManager] No Weaviate client available, skipping import');
@@ -1315,13 +1460,16 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
       const wasAvailable = this.weaviateAvailable;
       this.weaviateAvailable = await weaviateClientUtil.checkConnection(); // Use utility checker
       
-      // Log status changes
+      // Log status changes only, or use debug level for constant checks
       if (wasAvailable && !this.weaviateAvailable) {
         logger.error('[MemoryManager] Weaviate connection lost');
       } else if (!wasAvailable && this.weaviateAvailable) {
         logger.info('[MemoryManager] Weaviate connection restored');
         // Reinitialize schema when connection is restored
         await checkWeaviateSchema(); // Make sure schema check is awaited
+      } else {
+        // Optional: Log successful periodic checks at debug level
+        // logger.debug('[MemoryManager] Periodic Weaviate connection check successful');
       }
     }, 5 * 60 * 1000); // Check every 5 minutes
   }
@@ -1380,7 +1528,8 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
         const episodeQuery = client.graphql
           .get()
           .withClassName('EpisodeEmbedding')
-          .withFields('id title narrative occurredAt createdAt userId _additional { certainty }')
+          // Use correct fields for EpisodeEmbedding: episodeDbId, title, userId
+          .withFields('episodeDbId title userId _additional { certainty }')
           .withNearVector({
             vector: queryEmbedding,
             certainty: certainty * 0.8 // Slightly lower threshold for episodes
@@ -1398,6 +1547,7 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
         if (episodeData?.data?.Get?.EpisodeEmbedding) {
           episodeResults = episodeData.data.Get.EpisodeEmbedding.map(ep => ({
             ...ep,
+            id: ep.episodeDbId, // Map back to standard property for application use
             similarity: ep._additional.certainty,
             _additional: undefined,
             type: 'episode'
@@ -1414,12 +1564,13 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
       
       let chunkIds = [];
       let directChunkResults = [];
+      let linkedChunks = [];
       
       // 2a: Get chunks from episodes if any were found
       if (episodeResults.length > 0) {
         try {
-          const episodeIds = episodeResults.map(ep => ep.id);
-          const linkedChunks = await prisma.chunkEpisode.findMany({
+          const episodeIds = episodeResults.map(ep => ep.episodeDbId || ep.id);
+          linkedChunks = await prisma.chunkEpisode.findMany({
             where: {
               episodeId: { in: episodeIds }
             },
@@ -1432,7 +1583,12 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
           chunkIds = linkedChunks.map(link => link.chunkId);
           logger.info(`[MemoryManager] Found ${chunkIds.length} chunks linked to episodes`);
         } catch (error) {
-          logger.error('[MemoryManager] Error fetching linked chunks:', { error });
+          logger.error('[MemoryManager] Error fetching linked chunk IDs from DB:', { 
+            errorMessage: error.message, 
+            errorStack: error.stack, 
+            errorCode: error.code, // Include Prisma error code if available
+            errorMeta: error.meta // Include Prisma error meta if available
+          });
         }
       }
 
@@ -1445,7 +1601,8 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
           const chunkQuery = client.graphql
             .get()
             .withClassName('ChunkEmbedding')
-            .withFields('id text rawDataId importance dataType metadata createdAt userId _additional { certainty }')
+            // Use correct fields for ChunkEmbedding: chunkDbId, text, rawDataId, importance, userId
+            .withFields('chunkDbId text rawDataId importance userId _additional { certainty }')
             .withNearVector({
               vector: queryEmbedding,
               certainty: certainty
@@ -1473,6 +1630,7 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
           if (chunkData?.data?.Get?.ChunkEmbedding) {
             directChunkResults = chunkData.data.Get.ChunkEmbedding.map(chunk => ({
               ...chunk,
+              id: chunk.chunkDbId, // Map back to standard property for application use
               similarity: chunk._additional.certainty,
               _additional: undefined,
               type: 'chunk'
@@ -1499,7 +1657,9 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
           episodeLinkedChunks = chunkData.map(chunk => {
             // Try to find which episode this chunk came from
             const relevantEpisode = episodeResults.find(ep => {
-              return chunkIds.includes(chunk.id);
+              // Find the corresponding ChunkEpisode link to match chunkId and episodeId
+              const link = linkedChunks.find(l => l.chunkId === chunk.id && l.episode.id === ep.id);
+              return !!link;
             });
             
             return {
@@ -1512,7 +1672,12 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
             };
           });
         } catch (error) {
-          logger.error('[MemoryManager] Error fetching episode-linked chunks:', { error });
+          logger.error('[MemoryManager] Error fetching episode-linked chunk data from DB:', { 
+            errorMessage: error.message, 
+            errorStack: error.stack,
+            errorCode: error.code, // Include Prisma error code if available
+            errorMeta: error.meta // Include Prisma error meta if available
+          });
         }
       }
       
@@ -1524,7 +1689,8 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
         const thoughtQuery = client.graphql
           .get()
           .withClassName('ThoughtEmbedding')
-          .withFields('id name description createdAt userId _additional { certainty }')
+          // Use correct fields for ThoughtEmbedding: thoughtDbId, name, userId
+          .withFields('thoughtDbId name userId _additional { certainty }')
           .withNearVector({
             vector: queryEmbedding,
             certainty: certainty * 0.75 // Lower threshold for abstract thoughts
@@ -1532,7 +1698,6 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
           .withWhere({
             operator: 'Equal',
             path: ['userId'],
-            operator: 'Equal',
             valueString: userId
           })
           .withLimit(3) // Just a few high-level insights
@@ -1543,6 +1708,7 @@ IMPORTANCE_SCORE: [decimal between 0 and 1]
         if (thoughtData?.data?.Get?.ThoughtEmbedding) {
           thoughtResults = thoughtData.data.Get.ThoughtEmbedding.map(thought => ({
             ...thought,
+            id: thought.thoughtDbId, // Map back to standard property for application use
             similarity: thought._additional.certainty,
             _additional: undefined,
             type: 'thought'

@@ -1,0 +1,13 @@
+{
+  "timestamp": "2025-05-02T02:44:27.159Z",
+  "metrics": {
+    "episodes": 0,
+    "chunks": 0,
+    "thoughts": 0,
+    "episodesWithChunks": 0,
+    "episodesWithNarrative": 0,
+    "thoughtTypes": {}
+  },
+  "topEpisodes": [],
+  "topThoughts": []
+}

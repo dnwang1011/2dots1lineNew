@@ -18,6 +18,11 @@ const { initializeDatabase, initializeOntology } = require('./utils/db-init');
 const logger = require('./utils/logger');
 const { expressErrorHandler } = require('./utils/errorHandler');
 
+// ---> Import Agents <---
+const consolidationAgent = require('./services/consolidationAgent');
+const thoughtAgent = require('./services/thoughtAgent');
+// ---> End Imports <---
+
 // Initialize Express app
 const app = express();
 const prisma = new PrismaClient();
@@ -100,6 +105,13 @@ async function startServer() {
     // Initialize ontology (after database is confirmed working)
     await initializeOntology();
     
+    // ---> Start Agent Workers/Schedulers <---
+    logger.info('[Bootstrap] Starting background agents...');
+    consolidationAgent.startConsolidationWorker(); 
+    thoughtAgent.scheduleNightlyThoughtGeneration();
+    logger.info('[Bootstrap] Background agents initialized.');
+    // ---> End Agent Start <---
+    
     // Start HTTP server
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
@@ -120,12 +132,24 @@ startServer();
 // Handle graceful shutdown
 process.on('SIGINT', async () => {
   await prisma.$disconnect();
+  // Optional: Add agent shutdown logic here if needed
+  const consolidationAgent = require('./services/consolidationAgent');
+  const thoughtAgent = require('./services/thoughtAgent');
+  await consolidationAgent.shutdown();
+  await thoughtAgent.shutdown();
+  // ---> End Agent Shutdown <---
   console.log('Database connection closed.');
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
   await prisma.$disconnect();
+  // Optional: Add agent shutdown logic here if needed
+  const consolidationAgent = require('./services/consolidationAgent');
+  const thoughtAgent = require('./services/thoughtAgent');
+  await consolidationAgent.shutdown();
+  await thoughtAgent.shutdown();
+  // ---> End Agent Shutdown <---
   console.log('Database connection closed.');
   process.exit(0);
 });

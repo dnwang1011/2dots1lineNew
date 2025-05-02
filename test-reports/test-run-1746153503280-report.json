@@ -1,0 +1,26 @@
+{
+  "id": "test-run-1746153503280",
+  "timestamp": "2025-05-02T02:38:23.389Z",
+  "duration": "00:00:00",
+  "durationMs": 121,
+  "status": "passed",
+  "stats": {
+    "start": "2025-05-02T02:38:23.268Z",
+    "warnings": 0,
+    "errors": 0,
+    "messagesSent": 0,
+    "messagesReceived": 0,
+    "episodesCreated": 0,
+    "chunksCreated": 0,
+    "thoughtsCreated": 0,
+    "testCasesRun": 0,
+    "testCasesPassed": 0,
+    "end": "2025-05-02T02:38:23.389Z",
+    "durationMs": 121
+  },
+  "issues": [],
+  "suggestedFixes": [
+    "No episodes were created. Check consolidationAgent.js and verify that orphaned chunks are being properly clustered.",
+    "No thoughts were created. Verify thoughtAgent.js is being triggered and has proper error handling."
+  ]
+}

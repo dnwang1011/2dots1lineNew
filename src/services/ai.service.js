@@ -3,7 +3,9 @@
 
 const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
 const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+// Replace local Prisma instance with singleton
+// const prisma = new PrismaClient();
+const { prisma } = require('../db/prisma'); // Use the singleton instance
 const fs = require('fs');
 const path = require('path');
 const pdf = require('pdf-parse');
@@ -485,8 +487,13 @@ exports.sendMessage = async (userId, sessionId, message, options = {}) => {
     
     // Add memory context if provided in options
     if (options && options.additionalContext) {
+      logger.info('[AI Service] Memory context found. Adding to contextParts.');
+      logger.info(`[AI Service] Memory context length: ${options.additionalContext.length} characters`);
+      logger.info(`[AI Service] First 200 chars of memory context: "${options.additionalContext.substring(0, 200)}..."`);
       contextParts.push(options.additionalContext);
       logger.info('Including additional memory context with message'); // Use logger
+    } else {
+      logger.info('[AI Service] No memory context provided in options.additionalContext');
     }
     
     // Add file context if available
@@ -497,7 +504,18 @@ exports.sendMessage = async (userId, sessionId, message, options = {}) => {
     // Create the final message with all context included
     let messageWithContext = message;
     if (contextParts.length > 0) {
-      messageWithContext = `${contextParts.join('\n\n')}\n\nUSER MESSAGE: ${message}`;
+      // Change the format to make it clearer to the model that this is context, not user input
+      messageWithContext = `I'll respond to the following message from the user. First, here's some relevant context you should consider (but don't explicitly refer to it as "context" in your response):
+
+${contextParts.join('\n\n')}
+
+Now, here's the user's actual message that you should respond to:
+${message}`;
+      
+      logger.info(`[AI Service] Final combined message has ${messageWithContext.length} characters`);
+      logger.info('[AI Service] Memory context added to message');
+    } else {
+      logger.info('[AI Service] No context was added to the message');
     }
     
     // --- AI Call Logic ---

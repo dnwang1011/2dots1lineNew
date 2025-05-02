@@ -118,8 +118,27 @@ exports.sendMessage = async (req, res, next) => { // Add next for error middlewa
     // Format memories for AI context
     let memoryContext = '';
     if (relevantMemories && relevantMemories.length > 0) {
-        memoryContext = 'RELEVANT CONTEXT FROM MEMORY:\n' + relevantMemories.map((m, i) => `[Memory ${i+1}] ${m.content}`).join('\n\n');
-        logger.info(`Found ${relevantMemories.length} relevant memories`);
+        logger.info(`Found ${relevantMemories.length} relevant memories with types: ${relevantMemories.map(m => m.type).join(', ')}`);
+        
+        // Create more detailed memory context with type information
+        memoryContext = 'RELEVANT CONTEXT FROM MEMORY:\n' + 
+        relevantMemories.map((m, i) => {
+            // Format differently based on memory type
+            if (m.type === 'episode') {
+                return `[Memory ${i+1} - Episode] Title: "${m.title}"\nNarrative: ${m.narrative || 'No narrative available'}\nRelevance: ${m.similarity?.toFixed(2) || 'N/A'}`;
+            } else if (m.type === 'thought') {
+                return `[Memory ${i+1} - Thought] "${m.name}"\nInsight: ${m.content || 'No content available'}\nRelevance: ${m.similarity?.toFixed(2) || 'N/A'}`;
+            } else if (m.type === 'chunk') {
+                return `[Memory ${i+1} - Fragment] "${m.text?.substring(0, 300)}${m.text?.length > 300 ? '...' : ''}"\nRelevance: ${m.similarity?.toFixed(2) || 'N/A'}`;
+            } else {
+                return `[Memory ${i+1} - ${m.type || 'Unknown'}] Content: ${m.text || m.content || 'No content available'}\nRelevance: ${m.similarity?.toFixed(2) || 'N/A'}`;
+            }
+        }).join('\n\n');
+        
+        // Add explicit instruction for AI to reference memories when answering
+        memoryContext += '\n\nIMPORTANT: Reference these memories naturally when responding to the user\'s current message. Do not mention or list the memories directly, but incorporate the information seamlessly as if it\'s part of your own knowledge about the user.';
+        
+        logger.info('Enhanced memory context created for AI');
     } else {
         logger.info('No relevant memories found');
     }

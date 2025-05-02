@@ -2,7 +2,9 @@
 // Agent for generating high-level thoughts from related episodes
 
 const { PrismaClient } = require('@prisma/client');
-const prisma = new PrismaClient();
+// Replace local Prisma instance with singleton
+// const prisma = new PrismaClient();
+const { prisma } = require('../db/prisma'); // Use the singleton instance
 const logger = require('../utils/logger').childLogger('ThoughtAgent');
 const weaviateClientUtil = require('../utils/weaviateClient');
 const aiService = require('./ai.service'); // For generating thoughts
@@ -19,7 +21,7 @@ const MIN_THOUGHT_IMPORTANCE = 0.6; // Minimum importance for a thought to be st
  */
 async function generateThoughtsForUser(userId) {
   try {
-    logger.info(`[ThoughtAgent] Generating thoughts for user ${userId}`);
+    logger.info(`[ThoughtAgent] Starting thought generation process for user ${userId}`);
     
     // Get all episodes for the user
     const episodes = await prisma.episode.findMany({
@@ -32,40 +34,52 @@ async function generateThoughtsForUser(userId) {
       take: 50 // Limit to 50 most recent episodes for performance
     });
     
+    logger.info(`[ThoughtAgent] User ${userId}: Found ${episodes.length} episodes. Checking threshold (${MIN_EPISODES_FOR_THOUGHT}).`);
+    
     if (episodes.length < MIN_EPISODES_FOR_THOUGHT) {
-      logger.info(`[ThoughtAgent] Not enough episodes (${episodes.length}) for user ${userId} to generate thoughts`);
+      logger.info(`[ThoughtAgent] User ${userId}: Not enough episodes (${episodes.length}) to generate thoughts. Skipping.`);
       return;
     }
     
-    logger.info(`[ThoughtAgent] Found ${episodes.length} episodes for user ${userId}`);
-    
     // Find related episode clusters using cosine similarity between centroid vectors
+    logger.debug(`[ThoughtAgent] User ${userId}: Finding related episode clusters...`);
     const relatedEpisodeClusters = findRelatedEpisodes(episodes);
     
-    logger.info(`[ThoughtAgent] Found ${relatedEpisodeClusters.length} related episode clusters for user ${userId}`);
+    logger.info(`[ThoughtAgent] User ${userId}: Found ${relatedEpisodeClusters.length} related episode clusters.`);
     
     // Generate a thought for each cluster of related episodes
+    let thoughtsGenerated = 0;
     for (const cluster of relatedEpisodeClusters) {
+      const clusterEpisodeIds = cluster; // Assuming cluster is an array of IDs
+      logger.debug(`[ThoughtAgent] User ${userId}: Processing cluster with ${clusterEpisodeIds.length} episodes.`);
+      
       if (cluster.length < MIN_EPISODES_FOR_THOUGHT) {
+        logger.debug(`[ThoughtAgent] User ${userId}: Cluster too small (${clusterEpisodeIds.length} < ${MIN_EPISODES_FOR_THOUGHT}). Skipping.`);
         continue;
       }
       
       // Get full episodes for the cluster
+      logger.debug(`[ThoughtAgent] User ${userId}: Fetching full episode data for cluster.`);
       const clusterEpisodes = episodes.filter(ep => 
-        cluster.includes(ep.id)
+        clusterEpisodeIds.includes(ep.id)
       );
       
       // Generate the thought
+      logger.debug(`[ThoughtAgent] User ${userId}: Generating thought from ${clusterEpisodes.length} episodes in cluster.`);
       const thought = await generateThoughtFromEpisodes(clusterEpisodes, userId);
       
       // Store the thought and connect it to episodes
       if (thought) {
+        logger.info(`[ThoughtAgent] User ${userId}: Successfully generated thought candidate: "${thought.name}"`);
         const createdThought = await storeThought(thought, clusterEpisodes);
-        logger.info(`[ThoughtAgent] Created thought "${createdThought.name}" connected to ${clusterEpisodes.length} episodes`);
+        thoughtsGenerated++;
+        logger.info(`[ThoughtAgent] User ${userId}: Successfully stored thought "${createdThought.name}" (${createdThought.id}) connected to ${clusterEpisodes.length} episodes.`);
+      } else {
+        logger.info(`[ThoughtAgent] User ${userId}: Thought generation skipped or failed for cluster (check previous logs).`);
       }
     }
     
-    logger.info(`[ThoughtAgent] Completed thought generation for user ${userId}`);
+    logger.info(`[ThoughtAgent] Completed thought generation process for user ${userId}. Generated ${thoughtsGenerated} thoughts.`);
   } catch (error) {
     logger.error(`[ThoughtAgent] Error generating thoughts for user ${userId}:`, { error });
   }
@@ -202,19 +216,20 @@ IMPORTANCE: [score between 0 and 1]
 The response should only contain these three elements with no additional text.`;
 
     // Generate the thought using AI
-    const aiResponse = await aiService.generateText(prompt);
-    if (!aiResponse) {
+    const aiResponse = await aiService.getAiCompletion(prompt);
+    if (!aiResponse || !aiResponse.text) {
       logger.error('[ThoughtAgent] Failed to generate thought: empty AI response');
       return null;
     }
     
     // Parse the AI response
-    const nameMatch = aiResponse.match(/NAME:\s*(.+?)(?:\n|$)/);
-    const descriptionMatch = aiResponse.match(/DESCRIPTION:\s*([\s\S]+?)(?:\n*IMPORTANCE:|$)/);
-    const importanceMatch = aiResponse.match(/IMPORTANCE:\s*([\d.]+)/);
+    const responseText = aiResponse.text;
+    const nameMatch = responseText.match(/NAME:\s*(.+?)(?:\n|$)/);
+    const descriptionMatch = responseText.match(/DESCRIPTION:\s*([\s\S]+?)(?:\n*IMPORTANCE:|$)/);
+    const importanceMatch = responseText.match(/IMPORTANCE:\s*([\d.]+)/);
     
     if (!nameMatch || !descriptionMatch) {
-      logger.error('[ThoughtAgent] Failed to parse thought from AI response', { aiResponse });
+      logger.error('[ThoughtAgent] Failed to parse thought from AI response', { responseText });
       return null;
     }
     
@@ -324,7 +339,7 @@ async function storeThoughtInWeaviate(thought) {
       .withClassName('ThoughtEmbedding')
       .withId(thought.id)
       .withProperties({
-        id: thought.id,
+        thoughtDbId: thought.id,
         name: thought.name,
         description: thought.description,
         createdAt: thought.createdAt.toISOString(),
@@ -344,34 +359,56 @@ async function storeThoughtInWeaviate(thought) {
  */
 function scheduleNightlyThoughtGeneration() {
   // Schedule to run at 3:00 AM every day
+  logger.info('[ThoughtAgent] Scheduling nightly thought generation for 3:00 AM daily'); // Added more specific info
   const job = schedule.scheduleJob('0 3 * * *', async () => {
+    logger.info('[ThoughtAgent] Starting scheduled nightly thought generation run...'); // Log job start
     try {
       logger.info('[ThoughtAgent] Starting nightly thought generation');
       
       // Get all users
+      logger.debug('[ThoughtAgent] Fetching all users...');
       const users = await prisma.user.findMany({
         select: { id: true }
       });
       
-      logger.info(`[ThoughtAgent] Found ${users.length} users for thought generation`);
+      logger.info(`[ThoughtAgent] Found ${users.length} users for nightly thought generation.`);
       
       // Process each user sequentially
       for (const user of users) {
+        logger.info(`[ThoughtAgent] Starting thought generation for user ${user.id}`); // Log per-user start
         await generateThoughtsForUser(user.id);
+        logger.info(`[ThoughtAgent] Completed thought generation for user ${user.id}`); // Log per-user end
       }
       
-      logger.info('[ThoughtAgent] Completed nightly thought generation');
+      logger.info('[ThoughtAgent] Completed nightly thought generation for all users.');
     } catch (error) {
       logger.error('[ThoughtAgent] Error in nightly thought generation:', { error });
     }
+    logger.info('[ThoughtAgent] Finished scheduled nightly thought generation run.'); // Log job end
   });
   
   logger.info('[ThoughtAgent] Scheduled nightly thought generation');
   return job;
 }
 
+/**
+ * Gracefully shut down connections
+ */
+async function shutdown() {
+  try {
+    logger.info('[ThoughtAgent] Shutting down gracefully');
+    
+    // Note: Don't disconnect Prisma here as it's a singleton and other services might still be using it
+    
+    logger.info('[ThoughtAgent] Graceful shutdown complete');
+  } catch (error) {
+    logger.error('[ThoughtAgent] Error during graceful shutdown:', { error });
+  }
+}
+
 // Export the functions
 module.exports = {
   generateThoughtsForUser,
-  scheduleNightlyThoughtGeneration
+  scheduleNightlyThoughtGeneration,
+  shutdown
 }; 
