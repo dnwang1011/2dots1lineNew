@@ -22,6 +22,7 @@ model User {
   city              String?
   chunkEmbeddings   ChunkEmbedding[]
   episodes          Episode[]
+  fileUploadJobs    FileUploadJob[]
   ontologyProposals OntologyChangeProposal[]
   rawData           RawData[]
   thoughts          Thought[]
@@ -41,6 +42,7 @@ model RawData {
   processedAt        DateTime?
   processingError    String?
   processingStatus   String           @default("pending")
+  metadata           Json?
   chunkEmbeddings    ChunkEmbedding[]
   episodes           Episode[]
   user               User             @relation(fields: [userId], references: [id])
@@ -53,21 +55,24 @@ model RawData {
 }
 
 model ChunkEmbedding {
-  id         String         @id @default(cuid())
-  rawDataId  String
-  text       String
-  summary    String?
-  vector     Float[]
-  dimension  Int
-  importance Float
-  createdAt  DateTime       @default(now())
-  userId     String         @db.Uuid
-  metadata   String?
-  rawData    RawData        @relation(fields: [rawDataId], references: [id], onDelete: Cascade)
-  user       User           @relation(fields: [userId], references: [id])
-  episodes   ChunkEpisode[]
+  id               String         @id @default(cuid())
+  rawDataId        String
+  text             String
+  summary          String?
+  importance       Float
+  createdAt        DateTime       @default(now())
+  userId           String         @db.Uuid
+  index            Int
+  processingStatus String         @default("pending")
+  sessionId        String
+  tokenCount       Int
+  metadata         Json?
+  rawData          RawData        @relation(fields: [rawDataId], references: [id], onDelete: Cascade)
+  user             User           @relation(fields: [userId], references: [id])
+  episodes         ChunkEpisode[]
 
   @@index([userId])
+  @@index([sessionId])
 }
 
 model Episode {
@@ -182,4 +187,27 @@ model OntologyChangeProposal {
 
   @@index([status])
   @@index([userId])
+}
+
+model FileUploadJob {
+  id           String    @id @default(uuid()) @db.Uuid
+  userId       String    @db.Uuid
+  sessionId    String
+  status       String    @default("PENDING")
+  filename     String
+  filePath     String
+  fileSize     Int
+  mimeType     String
+  message      String?
+  resultData   Json?
+  errorMessage String?
+  createdAt    DateTime  @default(now())
+  startedAt    DateTime?
+  completedAt  DateTime?
+  user         User      @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([sessionId])
+  @@index([status])
+  @@index([createdAt])
 }

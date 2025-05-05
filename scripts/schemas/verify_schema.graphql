@@ -1,0 +1,32 @@
+{
+  ChunkEmbeddingTest: Get {
+    ChunkEmbedding(limit: 1) {
+      chunkDbId
+      text
+      userId
+      _additional {
+        id
+      }
+    }
+  }
+  ThoughtEmbeddingTest: Get {
+    ThoughtEmbedding(limit: 1) {
+      thoughtDbId
+      name
+      userId
+      _additional {
+        id
+      }
+    }
+  }
+  EpisodeEmbeddingTest: Get {
+    EpisodeEmbedding(limit: 1) {
+      episodeDbId
+      title
+      userId
+      _additional {
+        id
+      }
+    }
+  }
+} 

@@ -13,12 +13,13 @@ const redisConfig = require('../utils/redisConfig');
 const aiService = require('./ai.service'); // For generating narratives
 const dbscan = require('density-clustering').DBSCAN; // For clustering
 const { v4: uuidv4 } = require('uuid'); // Import uuid
+const aiConfig = require('../../config/ai.config'); // Import aiConfig
 
 // Configuration parameters
 const ORPHAN_QUEUE_NAME = 'orphan-chunks';
-const CONSOLIDATION_THRESHOLD = 5; // Min number of orphan chunks to trigger consolidation
-const DBSCAN_EPSILON = 0.35; // DBSCAN distance threshold (1 - cosine similarity)
-const DBSCAN_MIN_POINTS = 4; // DBSCAN minimum points to form a cluster
+const CONSOLIDATION_THRESHOLD = 2; // Min number of orphan chunks to trigger consolidation
+const DBSCAN_EPSILON = 0.30; // DBSCAN distance threshold (1 - cosine similarity)
+const DBSCAN_MIN_POINTS = 2; // DBSCAN minimum points to form a cluster
 const MAX_CHUNKS_PER_EPISODE = 30; // Maximum number of chunks to include in a single episode
 
 // Initialize the queue for orphan chunks
@@ -39,6 +40,43 @@ try {
 }
 
 /**
+ * Calculate cosine distance (1 - similarity) between two vectors.
+ * Handles validation and normalization.
+ * @param {Array<number>} a - First vector
+ * @param {Array<number>} b - Second vector
+ * @returns {number} Distance (0.0 to 2.0, typically 0.0 to 1.0 after clamping similarity)
+ */
+function calculateCosineDistance(a, b) {
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+    // Ensure vectors are valid and have the same length
+    if (!a || !b || !Array.isArray(a) || !Array.isArray(b) || a.length !== b.length || a.length === 0) {
+        logger.warn('[ConsolidationAgent] Invalid vectors for distance calculation.', { aLength: a?.length, bLength: b?.length });
+        return 1.0; // Max distance if invalid
+    }
+    for (let i = 0; i < a.length; i++) {
+        // Check for non-numeric values
+        if (typeof a[i] !== 'number' || typeof b[i] !== 'number') {
+             logger.warn('[ConsolidationAgent] Non-numeric value found in vectors.', { index: i, valA: a[i], valB: b[i] });
+             return 1.0; // Max distance
+        }
+        dotProduct += a[i] * b[i];
+        normA += a[i] * a[i];
+        normB += b[i] * b[i];
+    }
+    // Handle zero vectors
+    if (normA === 0 || normB === 0) {
+         logger.warn('[ConsolidationAgent] Zero vector encountered in distance calculation.');
+         return 1.0; // Max distance
+    }
+    const similarity = dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+    // Clamp similarity to avoid potential floating point issues leading to negative distance
+    const clampedSimilarity = Math.max(-1, Math.min(1, similarity)); // Clamp between -1 and 1 before distance calc
+    return 1.0 - clampedSimilarity; // Distance is 1 minus similarity
+}
+
+/**
  * Process orphan chunks to form new episodes
  * @param {string} userId - The user ID to process orphans for
  * @param {string} triggerChunkId - The ID of the chunk that triggered this job (for logging)
@@ -48,48 +86,64 @@ async function processOrphanChunks(userId, triggerChunkId) {
     logger.info(`[ConsolidationAgent] Worker processing job for user ${userId} (triggered by chunk ${triggerChunkId || 'unknown'})`);
     
     // Get all orphaned chunks for the user
-    // This could be optimized to use the queue instead if needed
-    const orphanedChunks = await getOrphanedChunks(userId);
+    const orphanedChunksRaw = await getOrphanedChunks(userId);
+
+    // We now expect objects with at least id and vector from getOrphanedChunks
+    const orphanedChunks = orphanedChunksRaw.filter(chunk => chunk.vector && Array.isArray(chunk.vector) && chunk.vector.length > 0);
+    if (orphanedChunks.length !== orphanedChunksRaw.length) {
+        logger.warn(`[ConsolidationAgent] User ${userId}: Filtered out ${orphanedChunksRaw.length - orphanedChunks.length} orphaned chunks due to missing or invalid vectors post-fetch.`);
+    }
     
     if (orphanedChunks.length < CONSOLIDATION_THRESHOLD) {
-      logger.info(`[ConsolidationAgent] User ${userId}: Not enough orphaned chunks (${orphanedChunks.length}) < threshold (${CONSOLIDATION_THRESHOLD}). Skipping consolidation.`);
+      logger.info(`[ConsolidationAgent] User ${userId}: Not enough orphaned chunks with vectors (${orphanedChunks.length}) < threshold (${CONSOLIDATION_THRESHOLD}). Skipping consolidation.`);
       return;
     }
     
-    logger.info(`[ConsolidationAgent] User ${userId}: Found ${orphanedChunks.length} orphaned chunks. Starting DBSCAN.`);
-    
+    logger.info(`[ConsolidationAgent] User ${userId}: Found ${orphanedChunks.length} orphaned chunks with vectors. Preparing for DBSCAN.`);
+    logger.info(`[ConsolidationAgent] User ${userId}: DBSCAN Params: Epsilon=${DBSCAN_EPSILON}, MinPoints=${DBSCAN_MIN_POINTS}`); // Log params
+
     // Prepare the chunks for clustering by extracting vectors
     const vectors = orphanedChunks.map(chunk => chunk.vector);
     const chunkIds = orphanedChunks.map(chunk => chunk.id);
-    
+    logger.info(`[ConsolidationAgent] User ${userId}: Orphaned Chunk IDs being processed: ${chunkIds.join(', ')}`); // Log IDs
+
+    // *** DEBUG: Log pairwise distances ***
+    logger.info(`[ConsolidationAgent] User ${userId}: Calculating pairwise distances...`);
+    let potentialNeighborsCount = 0;
+    for (let i = 0; i < vectors.length; i++) {
+        for (let j = i + 1; j < vectors.length; j++) {
+            const distance = calculateCosineDistance(vectors[i], vectors[j]);
+            let neighborIndicator = "";
+            if (distance <= DBSCAN_EPSILON) {
+                neighborIndicator = " <-- NEIGHBOR!";
+                potentialNeighborsCount++;
+            }
+             // Log first few distances for brevity, or log all if needed for deep debug
+            if (i < 5 && j < 10) { // Limit logging if too many chunks
+                 logger.info(`[ConsolidationAgent] -> Distance(${chunkIds[i].substring(0, 6)}... vs ${chunkIds[j].substring(0, 6)}...): ${distance.toFixed(4)}${neighborIndicator}`);
+            } else if (neighborIndicator) { // Always log neighbors
+                 logger.info(`[ConsolidationAgent] -> Distance(${chunkIds[i].substring(0, 6)}... vs ${chunkIds[j].substring(0, 6)}...): ${distance.toFixed(4)}${neighborIndicator}`);
+            }
+        }
+    }
+    logger.info(`[ConsolidationAgent] User ${userId}: Found ${potentialNeighborsCount} potential neighbor pairs based on epsilon.`);
+    // *** END DEBUG ***
+
     // Run DBSCAN to find clusters of related chunks
     const dbscanInstance = new dbscan();
     
     // Note: DBSCAN expects a distance function, but our vectors use cosine similarity
     // So we need to convert cosine similarity (1.0 = identical) to distance (0.0 = identical)
     let clusters = [];
+    let noise = []; // Capture noise points
     try {
-        clusters = dbscanInstance.run(vectors, DBSCAN_EPSILON, DBSCAN_MIN_POINTS,
-            (a, b) => { // Distance function: 1 - cosine similarity
-                let dotProduct = 0;
-                let normA = 0;
-                let normB = 0;
-                // Ensure vectors are valid and have the same length
-                if (!a || !b || a.length !== b.length) return 1.0; // Max distance if invalid
-                for (let i = 0; i < a.length; i++) {
-                    dotProduct += a[i] * b[i];
-                    normA += a[i] * a[i];
-                    normB += b[i] * b[i];
-                }
-                // Handle zero vectors
-                if (normA === 0 || normB === 0) return 1.0; // Max distance
-                const similarity = dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-                // Clamp similarity to avoid potential floating point issues leading to negative distance
-                const clampedSimilarity = Math.max(0, Math.min(1, similarity));
-                return 1.0 - clampedSimilarity;
-            }
-        );
-        logger.info(`[ConsolidationAgent] User ${userId}: DBSCAN completed. Found ${clusters.length} clusters.`);
+        // Pass our pre-defined distance function
+        clusters = dbscanInstance.run(vectors, DBSCAN_EPSILON, DBSCAN_MIN_POINTS, calculateCosineDistance);
+        noise = dbscanInstance.noise; // Get noise indices
+        // *** DEBUG: Log raw DBSCAN result ***
+        logger.info(`[ConsolidationAgent] User ${userId}: DBSCAN raw result: clusters=${JSON.stringify(clusters)}, noise=${JSON.stringify(noise)}`);
+        // *** END DEBUG ***
+        logger.info(`[ConsolidationAgent] User ${userId}: DBSCAN completed. Found ${clusters.length} clusters. Noise points: ${noise.length}.`);
     } catch (dbscanError) {
         logger.error(`[ConsolidationAgent] User ${userId}: DBSCAN clustering failed:`, { error: dbscanError });
         return; // Stop processing if clustering fails
@@ -188,34 +242,121 @@ async function processOrphanChunks(userId, triggerChunkId) {
 /**
  * Get orphaned chunks for a user (chunks not linked to any episode)
  * @param {string} userId - User ID to get orphans for
- * @returns {Promise<Array>} Array of orphaned chunk objects
+ * @returns {Promise<Array<{id: string, vector: Array<number>}>>} Array of orphaned chunk objects with id and vector
  */
 async function getOrphanedChunks(userId) {
   logger.debug(`[ConsolidationAgent] Fetching orphaned chunks for user ${userId}...`);
-  // Find all chunks for the user
+  // Find all chunks for the user (fetch full objects)
   const allChunks = await prisma.chunkEmbedding.findMany({
     where: {
-      userId: userId
+      userId: userId,
     }
+    // NO SELECT clause here - fetch full object initially
   });
-  
+
   // Find all chunks that are already part of episodes
   const linkedChunkIds = await prisma.chunkEpisode.findMany({
     select: {
       chunkId: true
-    }
+    },
   });
-  
+
   const linkedIds = new Set(linkedChunkIds.map(link => link.chunkId));
-  
+
   // Filter to only orphaned chunks
   const orphaned = allChunks.filter(chunk => !linkedIds.has(chunk.id));
   logger.debug(`[ConsolidationAgent] Found ${allChunks.length} total chunks, ${linkedChunkIds.length} linked chunks, resulting in ${orphaned.length} orphans for user ${userId}.`);
-  // Optional: Log the IDs of the orphans found
-  // if (orphaned.length > 0 && orphaned.length < 20) { // Avoid logging too many IDs
-  //    logger.debug(`[ConsolidationAgent] Orphan chunk IDs for user ${userId}: ${orphaned.map(o => o.id).join(', ')}`);
-  // }
-  return orphaned;
+
+  // Now fetch vectors from Weaviate for these orphaned chunks
+  const orphanedWithVectors = [];
+  for (const chunk of orphaned) {
+    try {
+      // Get the vector from Weaviate
+      const vector = await getChunkVectorFromWeaviate(chunk.id);
+      if (vector && vector.length > 0) {
+        orphanedWithVectors.push({
+          id: chunk.id,
+          vector: vector
+        });
+      } else {
+        logger.warn(`[ConsolidationAgent] User ${userId}: Chunk ${chunk.id} missing vector in Weaviate`);
+      }
+    } catch (error) {
+      logger.error(`[ConsolidationAgent] Error getting vector for chunk ${chunk.id}: ${error.message}`);
+    }
+  }
+
+  // Log diagnostics about missing vectors
+  const chunksWithoutVectors = orphaned.length - orphanedWithVectors.length;
+  if (chunksWithoutVectors > 0) {
+    logger.warn(`[ConsolidationAgent] User ${userId}: Found ${chunksWithoutVectors} orphaned chunks MISSING vectors after Weaviate fetch (out of ${orphaned.length} total orphans)`);
+  }
+
+  return orphanedWithVectors;
+}
+
+/**
+ * Retrieve a chunk's vector from Weaviate
+ * @param {string} chunkId - The ID of the chunk to retrieve the vector for
+ * @returns {Promise<Array<number>|null>} The vector array or null if not found
+ */
+async function getChunkVectorFromWeaviate(chunkId) {
+  const client = weaviateClientUtil.getClient();
+  if (!client) {
+    logger.error('[ConsolidationAgent] Weaviate client not available');
+    return null;
+  }
+  
+  // Retry configuration
+  const maxRetries = 3;
+  const baseDelay = 2000; // 2 seconds
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      logger.debug(`[ConsolidationAgent] Retrieving vector for chunk ${chunkId} from Weaviate (attempt ${attempt}/${maxRetries})`);
+      
+      // Use GraphQL API to retrieve the vector
+      const result = await client.graphql
+        .get()
+        .withClassName('ChunkEmbedding')
+        .withFields('chunkDbId _additional { vector }')
+        .withWhere({
+          path: ['chunkDbId'],
+          operator: 'Equal',
+          valueString: chunkId
+        })
+        .do();
+      
+      // Check if we got a valid result
+      const objects = result?.data?.Get?.ChunkEmbedding;
+      if (objects && objects.length > 0 && objects[0]._additional?.vector) {
+        logger.debug(`[ConsolidationAgent] Successfully retrieved vector for chunk ${chunkId} on attempt ${attempt}`);
+        return objects[0]._additional.vector;
+      } else {
+        logger.warn(`[ConsolidationAgent] No vector found for chunk ${chunkId} in Weaviate on attempt ${attempt}`);
+        
+        // If this is not the last attempt, delay before retrying
+        if (attempt < maxRetries) {
+          const delay = baseDelay * Math.pow(2, attempt - 1); // Exponential backoff
+          logger.debug(`[ConsolidationAgent] Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    } catch (error) {
+      logger.error(`[ConsolidationAgent] Error retrieving vector from Weaviate: ${error.message}`);
+      
+      // If this is not the last attempt, delay before retrying
+      if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt - 1); // Exponential backoff
+        logger.debug(`[ConsolidationAgent] Retrying in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  }
+  
+  // If we get here, all attempts failed
+  logger.error(`[ConsolidationAgent] Failed to retrieve vector for chunk ${chunkId} after ${maxRetries} attempts`);
+  return null;
 }
 
 /**
@@ -261,26 +402,17 @@ async function generateEpisodeNarrative(chunks) {
     
     logger.debug(`[ConsolidationAgent] Combined chunk text length for narrative generation: ${chunksText.length} chars`);
     
-    // Generate title and narrative
-    const prompt = `I have the following related memories or content. 
-    Please create a short title (max 50 characters) and summary (250-300 words) 
-    that captures their essence as if they form a coherent episode or experience:
+    // Use the centralized prompt from the config file
+    const prompt = aiConfig.episodeNarrativePrompt.replace('{CONTENT}', chunksText);
     
-    ${chunksText}
+    logger.debug('[ConsolidationAgent] Sending prompt for episode narrative generation');
     
-    Format your response as:
-    Title: [short memorable title]
+    const responseText = await aiService.getCompletion(prompt);
     
-    Summary: [narrative summary that captures the key themes and insights]`;
-    
-    const aiResponse = await aiService.getAiCompletion(prompt);
-    
-    // Parse the response
     let title = 'Untitled Episode';
     let narrative = 'No description available.';
     
-    if (aiResponse && aiResponse.text) {
-      const responseText = aiResponse.text;
+    if (responseText) {
       // Extract title
       const titleMatch = responseText.match(/Title:\s*(.+?)(?:\n|$)/);
       if (titleMatch && titleMatch[1]) {
@@ -317,34 +449,49 @@ async function storeEpisodeInWeaviate(episode) {
   
   try {
     logger.debug(`[ConsolidationAgent] Attempting to store episode ${episode.id} in Weaviate with title: ${episode.title}`);
-    // Create a Weaviate object for the episode, only including planned properties
     
     // Generate UUID for Weaviate
     const weaviateUuid = uuidv4(); 
     logger.debug(`[ConsolidationAgent] Using Weaviate ID ${weaviateUuid} for DB Episode ${episode.id}`);
     
+    // Expand vector to 1536 dimensions to match existing episode vectors
+    const targetDimension = aiConfig.embeddingDimension || 1536;
+    let vectorToStore = episode.centroidVec;
+    
+    if (vectorToStore.length !== targetDimension) {
+      logger.info(`[ConsolidationAgent] Expanding episode centroid vector from ${vectorToStore.length} to ${targetDimension} dimensions`);
+      const { expandVector } = require('./memoryManager.service');
+      vectorToStore = await expandVector(vectorToStore, targetDimension);
+    }
+    
+    // Store the episode in Weaviate
     await client.data
       .creator()
       .withClassName('EpisodeEmbedding')
-      .withId(weaviateUuid) // Use generated UUID
+      .withId(weaviateUuid)
       .withProperties({
-        episodeDbId: episode.id, // Store the Prisma DB ID
-        title: episode.title,    // Store the title
-        userId: episode.userId     // Store the user ID
-        // Removed narrative, occurredAt, createdAt as they weren't in the plan for Weaviate schema
+        episodeDbId: episode.id,
+        title: episode.title || 'Untitled Episode',
+        userId: episode.userId
       })
-      .withVector(episode.centroidVec)
+      .withVector(vectorToStore)
       .do();
     
-    logger.info(`[ConsolidationAgent] Stored episode ${episode.id} in Weaviate`);
-  } catch (error) {
-    // Improved logging
-    logger.error(`[ConsolidationAgent] Error storing episode ${episode.id} in Weaviate: ${error.message || 'Unknown error'}`, { 
-      error: error, // Log the full error object
-      errorMessage: error.message,
-      stack: error.stack,
-      episodeData: { id: episode.id, title: episode.title, userId: episode.userId } // Log key data being sent
+    logger.info(`[ConsolidationAgent] Successfully stored episode ${episode.id} in Weaviate with ID ${weaviateUuid}`);
+    
+    // Update the Postgres episode record with centroidDim
+    await prisma.episode.update({
+      where: { id: episode.id },
+      data: { 
+        centroidDim: targetDimension,
+        centroidVec: vectorToStore // Store the expanded vector in the database as well
+      }
     });
+    
+    return weaviateUuid;
+  } catch (error) {
+    logger.error(`[ConsolidationAgent] Error storing episode ${episode.id} in Weaviate: ${error.message}`, { error });
+    throw error;
   }
 }
 

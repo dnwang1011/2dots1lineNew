@@ -6,7 +6,7 @@ require('dotenv').config();
 // Set default Weaviate host if not defined
 if (!process.env.WEAVIATE_HOST) {
   process.env.WEAVIATE_HOST = 'http://localhost:8080';
-  console.log('WEAVIATE_HOST not found in environment, using default:', process.env.WEAVIATE_HOST);
+  logger.info('WEAVIATE_HOST not found in environment, using default:', process.env.WEAVIATE_HOST);
 }
 
 const express = require('express');
@@ -53,10 +53,13 @@ if (!fs.existsSync(uploadsDir)) {
 // Import routes
 const authRoutes = require('./routes/auth.routes');
 const chatRoutes = require('./routes/chat.routes');
+const sessionRoutes = require('./routes/session.routes');
+const authMiddleware = require('./middleware/auth.middleware');
 
 // Use routes
 app.use('/api/auth', authRoutes);
-app.use('/api/chat', chatRoutes);
+app.use('/api/chat', authMiddleware.verifyToken, chatRoutes);
+app.use('/api/session', authMiddleware.verifyToken, sessionRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -92,13 +95,16 @@ app.get('*', (req, res) => {
 // Centralized Error Handling Middleware
 app.use(expressErrorHandler);
 
+// Export the app instance for testing with supertest
+module.exports.app = app;
+
 // Start server and initialize database
 async function startServer() {
   try {
     // Initialize database
     const dbInitialized = await initializeDatabase();
     if (!dbInitialized) {
-      console.error('Failed to initialize database. Exiting...');
+      logger.error('Failed to initialize database. Exiting...');
       process.exit(1);
     }
     
@@ -113,16 +119,20 @@ async function startServer() {
     // ---> End Agent Start <---
     
     // Start HTTP server
-    app.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
-      console.log(`Access the application at http://localhost:${PORT}`);
-      console.log('---');
-      console.log('Gemini API Key:', process.env.GOOGLE_AI_API_KEY ? 'Configured' : 'Missing');
-      console.log('JWT Secret:', process.env.JWT_SECRET ? 'Configured' : 'Missing');
-      console.log('---');
+    const server = app.listen(PORT, () => {
+      logger.info(`Server running on port ${PORT}`);
+      logger.info(`Access the application at http://localhost:${PORT}`);
+      
+      // Log configuration status
+      logger.info('Configuration status:');
+      logger.info(`- Gemini API Key: ${process.env.GOOGLE_AI_API_KEY ? 'Configured' : 'Missing'}`);
+      logger.info(`- JWT Secret: ${process.env.JWT_SECRET ? 'Configured' : 'Missing'}`);
     });
+
+    // Expose server instance for graceful shutdown
+    module.exports.server = server;
   } catch (err) {
-    console.error('Failed to start server:', err);
+    logger.error('Failed to start server:', err);
     process.exit(1);
   }
 }
@@ -138,7 +148,7 @@ process.on('SIGINT', async () => {
   await consolidationAgent.shutdown();
   await thoughtAgent.shutdown();
   // ---> End Agent Shutdown <---
-  console.log('Database connection closed.');
+  logger.info('Database connection closed.');
   process.exit(0);
 });
 
@@ -150,7 +160,7 @@ process.on('SIGTERM', async () => {
   await consolidationAgent.shutdown();
   await thoughtAgent.shutdown();
   // ---> End Agent Shutdown <---
-  console.log('Database connection closed.');
+  logger.info('Database connection closed.');
   process.exit(0);
 });
 

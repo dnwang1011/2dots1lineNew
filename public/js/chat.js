@@ -29,10 +29,13 @@ function sendMessage() {
     // Add a temporary user message for the attachment upload
     const tempMessageId = 'temp-msg-' + Date.now();
     // We will replace this or update it after upload success
-    addUserMessage(`Uploading ${currentAttachment.type === 'image' ? 'image' : 'file'}...`, tempMessageId);
+    addUserMessage(`Uploading ${currentAttachment.type === 'image' ? 'image' : 'file'}...`, tempMessageId, null);
 
-    // First upload the file
-    uploadFile(currentAttachment.file, currentAttachment.type)
+    // Store the attachment details *before* clearing it, so we can display it
+    const attachmentDetailsForDisplay = { ...currentAttachment };
+
+    // First upload the file, passing the user's message along with it
+    uploadFile(currentAttachment.file, currentAttachment.type, message)
       .then(uploadResponse => {
         // Remove the temporary message
         const tempMessageElement = document.getElementById(tempMessageId);
@@ -41,27 +44,27 @@ function sendMessage() {
         }
 
         if (uploadResponse && uploadResponse.success) {
-          // Add the actual user message AFTER successful upload
+          // Always add the user message (with attachment) to the UI now
           const messageId = 'msg-' + Date.now();
-          const attachmentMessageContent = message || `Sharing ${currentAttachment.type === 'image' ? 'an image' : 'a file'}: ${currentAttachment.file.name}`;
-          addUserMessage(attachmentMessageContent, messageId);
+          // If user didn't type a message, create a default one
+          const messageText = message || `Sharing ${attachmentDetailsForDisplay.type === 'image' ? 'an image' : 'a file'}: ${attachmentDetailsForDisplay.file.name}`;
+          addUserMessage(messageText, messageId, attachmentDetailsForDisplay);
 
-          // Clear the current attachment
+          // Clear the current attachment state (not the details we saved for display)
           clearAttachment();
 
-          // **** Check for AI analysis response in the upload result ****
-          if (uploadResponse.aiResponse && uploadResponse.aiResponse.text) {
-            console.log('Displaying AI analysis from upload response.');
-            addBotMessage(uploadResponse.aiResponse.text);
+          // **** Display the AI analysis response from the upload result ****
+          // Corrected: Look inside uploadResponse.data.analysisText
+          if (uploadResponse.data && uploadResponse.data.analysisText) {
+            addBotMessage(uploadResponse.data.analysisText);
           } else {
-             // If no direct AI response, maybe send a confirmation or do nothing?
-             // Optionally, could still call sendMessageToServer if you want a text follow-up
-             // For now, we assume the aiResponse is the primary result.
-             console.log('Upload successful, but no direct AI analysis response found in the result.');
+             // Log if the structure is wrong or text is missing
+             console.warn('Upload successful, but data.analysisText was missing:', uploadResponse);
+             addSystemMessage('File uploaded, but no analysis available.');
           }
 
         } else {
-          addSystemMessage(`Failed to upload ${currentAttachment.type}: ${uploadResponse.message || 'Unknown error'}`);
+          addSystemMessage(`Failed to upload ${currentAttachment?.type || 'file'}: ${uploadResponse.message || 'Unknown error'}`);
           clearAttachment();
         }
       })
@@ -71,14 +74,13 @@ function sendMessage() {
         if (tempMessageElement) {
             tempMessageElement.remove();
         }
-        console.error('Error uploading file:', error);
         addSystemMessage(`Error uploading ${currentAttachment.type}: ${error.message}`);
         clearAttachment();
       });
   } else if (message) {
     // Only add user message and send to server if there is text content and no attachment
     const messageId = 'msg-' + Date.now();
-    addUserMessage(message, messageId);
+    addUserMessage(message, messageId, null);
     // Just send the text message to the server
     sendMessageToServer(message);
   }
@@ -119,19 +121,18 @@ function sendMessageToServer(message) {
     })
     .then(data => {
       if (data && data.success) {
-        if (data.response && data.response.text) {
-          addBotMessage(data.response.text);
-        } else if (data.aiResponse && data.aiResponse.text) {
-          addBotMessage(data.aiResponse.text);
+        if (data.data && data.data.text) { 
+          addBotMessage(data.data.text);
         } else {
-          addSystemMessage('No response from Dot. Please try again later.');
+          console.warn('Received success response but text field is missing in data.data:', data);
+          addSystemMessage('Received success, but no response text from Dot.');
         }
       } else {
-        throw new Error(data.error || 'Failed to get response from server');
+        const errorMessage = data.error?.message || data.error || 'Failed to get response from server';
+        throw new Error(errorMessage);
       }
     })
     .catch(error => {
-      console.error('Error sending message:', error);
       addSystemMessage(`Error: ${error.message}`);
       if (error.message.includes('Authentication required')) {
         sessionStorage.removeItem('token');
@@ -140,7 +141,7 @@ function sendMessageToServer(message) {
 }
 
 // Upload a file to the server
-function uploadFile(file, fileType) {
+function uploadFile(file, fileType, message) {
   const token = sessionStorage.getItem('token');
   if (!token) {
     addSystemMessage('Authentication required. Please sign in.');
@@ -152,6 +153,10 @@ function uploadFile(file, fileType) {
   formData.append('file', file);
   formData.append('session_id', getSessionId());
   formData.append('file_type', fileType); // Optional metadata
+  // Append the message if it exists
+  if (message && message.trim() !== '') {
+    formData.append('message', message);
+  }
   
   return fetch(`${window.apiBaseUrl}/chat/upload`, {
     method: 'POST',
@@ -171,11 +176,9 @@ function uploadFile(file, fileType) {
     return response.json();
   })
   .then(data => {
-    console.log('File upload response:', data);
     return data;
   })
   .catch(error => {
-    console.error('Error uploading file:', error);
     addSystemMessage(`Error uploading file: ${error.message}`);
     return { success: false, message: error.message };
   });
@@ -184,8 +187,6 @@ function uploadFile(file, fileType) {
 // Handle file selection for both images and documents
 function handleFileSelection(file, type) {
   if (!file) return;
-  
-  console.log(`Selected ${type}:`, file);
   
   // Check file size (10MB limit)
   const maxSize = 10 * 1024 * 1024; // 10MB in bytes
@@ -294,7 +295,6 @@ function getSessionId() {
     const newSessionId = 'session-' + Date.now();
     // Store it in sessionStorage
     sessionStorage.setItem('chatSessionId', newSessionId);
-    console.log('Created new session ID:', newSessionId);
     return newSessionId;
   }
   
@@ -304,7 +304,6 @@ function getSessionId() {
     // Fallback if no session ID exists (should not normally happen)
     sessionId = 'session-' + Date.now();
     sessionStorage.setItem('chatSessionId', sessionId);
-    console.log('Created fallback session ID:', sessionId);
   }
   
   return sessionId;
@@ -315,12 +314,11 @@ function createNewSession() {
   const newSessionId = 'session-' + Date.now();
   sessionStorage.setItem('chatSessionId', newSessionId);
   window.sessionStartTime = Date.now();
-  console.log('Manually created new session ID:', newSessionId);
   return newSessionId;
 }
 
 // Add a user message to the chat
-function addUserMessage(message, messageId) {
+function addUserMessage(message, messageId, attachment) {
   const chatMessages = document.querySelector('.chat-messages');
   const messageDiv = document.createElement('div');
   messageDiv.className = 'message user-message';
@@ -329,10 +327,37 @@ function addUserMessage(message, messageId) {
   const avatar = '<div class="message-avatar" style="background-color: #6366f1; display: flex; align-items: center; justify-content: center; color: white;"><i data-feather="user" style="width: 20px; height: 20px;"></i></div>';
   const messageTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   
+  // Create attachment HTML if attachment exists
+  let attachmentHtml = '';
+  if (attachment && attachment.file) {
+      if (attachment.type === 'image' && attachment.file.type.startsWith('image/')) {
+          // Generate a temporary URL for the image thumbnail
+          const objectURL = URL.createObjectURL(attachment.file);
+          // Add class for styling and potentially click handler later
+          attachmentHtml = `
+              <div class="message-attachment image-attachment">
+                  <img src="${objectURL}" alt="${escapeHtml(attachment.file.name)}" style="max-width: 150px; max-height: 100px; border-radius: 4px; cursor: pointer;" onclick="showImageModal('${objectURL}')">
+              </div>
+          `;
+          // Note: Consider revoking the object URL later to free memory, 
+          // perhaps when the message scrolls out of view or after some time.
+          // URL.revokeObjectURL(objectURL); // Example - needs proper timing
+      } else {
+          // Simple display for non-image files
+          attachmentHtml = `
+              <div class="message-attachment file-attachment" style="display: flex; align-items: center; background-color: #f3f4f6; padding: 5px 10px; border-radius: 4px; margin-top: 5px;">
+                  <i data-feather="file" style="width: 16px; height: 16px; margin-right: 5px; color: #4b5563;"></i>
+                  <span style="font-size: 0.8rem; color: #374151;">${escapeHtml(attachment.file.name)}</span>
+              </div>
+          `;
+      }
+  }
+
   messageDiv.innerHTML = `
     <div>
       <div class="message-content">
-        <p>${escapeHtml(message)}</p>
+        ${attachmentHtml} 
+        <p>${escapeHtml(message)}</p> 
       </div>
       <div class="message-time">${messageTime}</div>
     </div>
@@ -342,6 +367,61 @@ function addUserMessage(message, messageId) {
   chatMessages.appendChild(messageDiv);
   chatMessages.scrollTop = chatMessages.scrollHeight;
   feather.replace();
+}
+
+// Add a modal for viewing images
+function showImageModal(imageSrc) {
+    let modal = document.getElementById('imageModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'imageModal';
+        modal.style.display = 'none';
+        modal.style.position = 'fixed';
+        modal.style.zIndex = '1000';
+        modal.style.left = '0';
+        modal.style.top = '0';
+        modal.style.width = '100%';
+        modal.style.height = '100%';
+        modal.style.overflow = 'auto';
+        modal.style.backgroundColor = 'rgba(0,0,0,0.8)';
+        modal.style.justifyContent = 'center';
+        modal.style.alignItems = 'center';
+
+        const modalContent = document.createElement('img');
+        modalContent.id = 'modalImageContent';
+        modalContent.style.maxWidth = '80%';
+        modalContent.style.maxHeight = '80%';
+        modalContent.style.display = 'block';
+        modalContent.style.margin = 'auto';
+
+        const closeButton = document.createElement('span');
+        closeButton.innerHTML = '&times;';
+        closeButton.style.position = 'absolute';
+        closeButton.style.top = '20px';
+        closeButton.style.right = '35px';
+        closeButton.style.color = '#f1f1f1';
+        closeButton.style.fontSize = '40px';
+        closeButton.style.fontWeight = 'bold';
+        closeButton.style.cursor = 'pointer';
+        closeButton.onclick = function() {
+            modal.style.display = 'none';
+        }
+
+        modal.appendChild(closeButton);
+        modal.appendChild(modalContent);
+        document.body.appendChild(modal);
+
+        // Close modal on click outside image
+        modal.onclick = function(event) {
+            if (event.target === modal) {
+                modal.style.display = 'none';
+            }
+        }
+    }
+
+    // Set the image source and display the modal
+    document.getElementById('modalImageContent').src = imageSrc;
+    modal.style.display = 'flex'; // Use flex for centering
 }
 
 // Add a bot message to the chat
@@ -701,7 +781,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             addSystemMessage('Listening... Speak now.');
           } catch (error) {
-            console.error('Error starting speech recognition:', error);
             addSystemMessage('Could not access microphone. Please check permissions.');
           }
         } else {
@@ -737,7 +816,6 @@ document.addEventListener('DOMContentLoaded', () => {
       
       // Handle errors
       recognition.onerror = (event) => {
-        console.error('Speech recognition error:', event.error);
         addSystemMessage(`Error: ${event.error}`);
         isRecording = false;
         voiceInputButton.classList.remove('recording');

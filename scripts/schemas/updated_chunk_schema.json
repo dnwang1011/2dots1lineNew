@@ -1,0 +1,81 @@
+{
+  "class": "ChunkEmbedding",
+  "description": "A memory chunk with its embedding vector",
+  "vectorIndexType": "hnsw",
+  "vectorizer": "none",
+  "vectorIndexConfig": {
+    "distance": "cosine"
+  },
+  "properties": [
+    {
+      "name": "chunkDbId",
+      "description": "ID of the ChunkEmbedding in the database",
+      "dataType": ["text"]
+    },
+    {
+      "name": "text",
+      "description": "The full text content of the chunk",
+      "dataType": ["text"]
+    },
+    {
+      "name": "rawDataId",
+      "description": "ID of the source raw data",
+      "dataType": ["text"]
+    },
+    {
+      "name": "importance",
+      "description": "Importance score of the memory (0-1)",
+      "dataType": ["number"]
+    },
+    {
+      "name": "userId",
+      "description": "ID of the user this memory belongs to",
+      "dataType": ["text"]
+    },
+    {
+      "name": "sessionId",
+      "description": "Session ID associated with this chunk",
+      "dataType": ["text"]
+    },
+    {
+      "name": "chunkIndex",
+      "description": "Index of this chunk within the original content",
+      "dataType": ["number"]
+    },
+    {
+      "name": "tokenCount",
+      "description": "Number of tokens in the chunk text",
+      "dataType": ["number"]
+    },
+    {
+      "name": "contentType",
+      "description": "Type of the original raw data",
+      "dataType": ["text"]
+    },
+    {
+      "name": "sourceCreatedAt",
+      "description": "Creation timestamp of the original raw data",
+      "dataType": ["date"]
+    },
+    {
+      "name": "skipImportanceCheck",
+      "description": "Flag indicating if importance check was skipped",
+      "dataType": ["boolean"]
+    },
+    {
+      "name": "perspectiveOwnerId",
+      "description": "ID of the perspective owner",
+      "dataType": ["text"]
+    },
+    {
+      "name": "subjectId",
+      "description": "ID of the subject",
+      "dataType": ["text"]
+    },
+    {
+      "name": "topicKey",
+      "description": "Key of the associated topic",
+      "dataType": ["text"]
+    }
+  ]
+} 

@@ -1,0 +1,7 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+Follow rules in [CODING_STANDARDS.md](mdc:CODING_STANDARDS.md).
+When migrating the codebase, refer to [MIGRATION_ROADMAP.md](mdc:MIGRATION_ROADMAP.md)

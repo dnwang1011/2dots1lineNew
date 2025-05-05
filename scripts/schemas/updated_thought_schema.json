@@ -1,0 +1,26 @@
+{
+  "class": "ThoughtEmbedding",
+  "description": "A thought insight with its vector",
+  "vectorIndexType": "hnsw",
+  "vectorizer": "none",
+  "vectorIndexConfig": {
+    "distance": "cosine"
+  },
+  "properties": [
+    {
+      "name": "thoughtDbId",
+      "description": "ID of the Thought in the database",
+      "dataType": ["text"]
+    },
+    {
+      "name": "name",
+      "description": "Short label for the thought",
+      "dataType": ["text"]
+    },
+    {
+      "name": "userId",
+      "description": "ID of the user this thought belongs to",
+      "dataType": ["text"]
+    }
+  ]
+} 

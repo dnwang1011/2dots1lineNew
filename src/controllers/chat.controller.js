@@ -1,213 +1,87 @@
 // src/controllers/chat.controller.js
 // Controller for handling chat messages, AI responses, and message history
 
-const { PrismaClient } = require('@prisma/client');
+// Remove direct PrismaClient import if singleton is used consistently
+// const { PrismaClient } = require('@prisma/client');
+// const { prisma } = require('../db/prisma'); // Remove direct prisma import
+const rawDataRepository = require('../repositories/rawData.repository'); // Import RawData repository
 const aiService = require('../services/ai.service');
-const { processFileContent } = require('../services/ai.service'); // Import processFileContent
-const memoryManager = require('../services/memoryManager.service'); // Import MemoryManager
+const memoryManager = require('../services/memoryManager.service'); // Import MemoryManager instance
 const { v4: uuidv4 } = require('uuid');
-// const multer = require('multer'); // Removed - using fileUploadService
 const path = require('path');
 const fs = require('fs');
-const logger = require('../utils/logger').childLogger('ChatController'); // Import and create child logger
-const fileUploadService = require('../services/fileUpload.service'); // Import file upload service
-const { handleServiceError } = require('../utils/errorHandler'); // Import error handler
+const logger = require('../utils/logger').childLogger('ChatController');
+// const fileUploadService = require('../services/fileUpload.service'); // Old service (now middleware)
+const fileUploadMiddleware = require('../middleware/fileUpload.middleware'); // Import middleware
+const fileUploadService = require('../services/fileUpload.service'); // Import the NEW service
+const { handleServiceError, ServiceError } = require('../utils/errorHandler');
+const memoryConfig = require('../../config/memory.config'); // Import memory config
+const aiConfig = require('../../config/ai.config'); // Import AI config
+const chatService = require('../services/chat.service'); // Import the new chat service
+const { addMemoryJob } = require('../utils/queues');
 
-const prisma = new PrismaClient();
-
-// Configure multer for file uploads (Removed - moved to fileUploadService)
-/*
-const upload = multer({ ... });
-*/
-
-/**
- * Record raw data in the database for memory processing
- * @param {object} data - Raw data to record
- * @returns {Promise<object>} Created raw data record
- */
-async function recordRawData(data) {
-  try {
-    logger.debug('Recording raw data:', { data: JSON.stringify(data) }); // Use logger (debug level)
-    
-    // Handle system perspective owner (not a UUID)
-    const perspectiveOwnerId = data.perspectiveOwnerId === 'system' 
-      ? data.userId  // Use the user ID if it's a system perspective
-      : data.perspectiveOwnerId;
-    
-    const subjectId = data.subjectId || perspectiveOwnerId;
-    
-    return await prisma.rawData.create({
-      data: {
-        content: data.content,
-        contentType: data.contentType,
-        topicKey: data.topicKey || null,
-        userId: data.userId,
-        sessionId: data.sessionId,
-        perspectiveOwnerId,
-        subjectId,
-        importanceScore: data.importanceScore || 0.5, // Default importance score
-        processingStatus: "pending" // Will be processed by Memory Manager
-      }
-    });
-  } catch (error) {
-    // Log the error using centralized handler, but re-throw 
-    // as this function is internal and the caller needs to handle it.
-    handleServiceError(error, 'database raw data recording'); 
-    throw error; // Re-throw for the calling function
-  }
-}
+// Remove local Prisma instance
+// const prisma = new PrismaClient();
 
 /**
  * Process a message and get AI response
  * @route POST /api/chat
  */
-exports.sendMessage = async (req, res, next) => { // Add next for error middleware
-  let userRawDataRecord = null; // Define outside try block
-  const userId = req.user?.id; // Safely access userId
-  const sessionId = req.body?.session_id;
+exports.sendMessage = async (req, res, next) => {
+  const userId = req.user?.id;
+  const sessionIdFromBody = req.body?.session_id;
+  const messageFromBody = req.body?.raw_data?.message;
+  const messageTypeFromBody = req.body?.message_type;
 
   try {
-    logger.info('Chat request received:', { body: req.body }); 
-    const { session_id, message_type, raw_data } = req.body;
-    
+    logger.info('Chat message request received in controller', { body: req.body });
+
     // Input Validation
     if (!userId) {
-        return res.status(401).json(handleServiceError(new Error('User ID missing from request token'), 'authentication'));
+      // Use next for errors to let middleware handle the response
+      return next(new ServiceError('User ID missing from request token', 401));
     }
-    if (!session_id || !message_type || !raw_data) {
-        return res.status(400).json(handleServiceError(new Error('Missing required fields: session_id, message_type, raw_data'), 'request validation'));
+    if (!sessionIdFromBody || !messageTypeFromBody || !messageFromBody) {
+      return next(new ServiceError('Missing required fields: session_id, message_type, raw_data.message', 400));
     }
-    const message = raw_data.message;
-    if (!message) {
-        return res.status(400).json(handleServiceError(new Error('Message content is required'), 'request validation'));
-    }
-    
-    logger.info(`Processing message from user ${userId} in session ${session_id}: "${message.substring(0, 50)}..."`);
-    
-    // Special handling for formatting style update message
-    if (message.includes("__FORMAT_UPDATE__") && userId === process.env.ADMIN_USER_ID) {
+    // Optional: Add validation for message_type if needed
+
+    // --- Special Handling (Keep in Controller?) ---
+    // This logic seems like UI/Admin control rather than core chat processing.
+    // Keeping it here might be appropriate, or moving it to a dedicated admin route/service.
+    if (messageFromBody.includes("__FORMAT_UPDATE__") && userId === process.env.ADMIN_USER_ID) {
       logger.info('Admin formatting update request received.');
+      // Standardize this response too
       return res.status(200).json({
         success: true,
-        session_id,
-        response: {
-          text: "Formatting style updated. The AI will now use a more conversational style with fewer bullet points and will avoid starting with phrases like 'Okay'."
+        data: {
+          session_id: sessionIdFromBody, // Include session_id within data
+          message: "Formatting style updated."
         }
       });
     }
-    
-    // Record user message FIRST
-    userRawDataRecord = await recordRawData({
-        content: message,
-        contentType: 'user_chat',
-        userId: userId,
-        sessionId: session_id,
-        perspectiveOwnerId: userId,
-        importanceScore: null 
-    });
-    logger.info('User message recorded in database', { rawDataId: userRawDataRecord.id });
+    // --- End Special Handling ---
 
-    // Retrieve relevant memories for context
-    logger.info('Retrieving relevant memories for context...');
-    const relevantMemories = await memoryManager.retrieveMemories(message, userId, {
-        limit: 5,                
-        minImportance: 0.4,      
-        certainty: 0.6,          
-    });
-    
-    // Format memories for AI context
-    let memoryContext = '';
-    if (relevantMemories && relevantMemories.length > 0) {
-        logger.info(`Found ${relevantMemories.length} relevant memories with types: ${relevantMemories.map(m => m.type).join(', ')}`);
-        
-        // Create more detailed memory context with type information
-        memoryContext = 'RELEVANT CONTEXT FROM MEMORY:\n' + 
-        relevantMemories.map((m, i) => {
-            // Format differently based on memory type
-            if (m.type === 'episode') {
-                return `[Memory ${i+1} - Episode] Title: "${m.title}"\nNarrative: ${m.narrative || 'No narrative available'}\nRelevance: ${m.similarity?.toFixed(2) || 'N/A'}`;
-            } else if (m.type === 'thought') {
-                return `[Memory ${i+1} - Thought] "${m.name}"\nInsight: ${m.content || 'No content available'}\nRelevance: ${m.similarity?.toFixed(2) || 'N/A'}`;
-            } else if (m.type === 'chunk') {
-                return `[Memory ${i+1} - Fragment] "${m.text?.substring(0, 300)}${m.text?.length > 300 ? '...' : ''}"\nRelevance: ${m.similarity?.toFixed(2) || 'N/A'}`;
-            } else {
-                return `[Memory ${i+1} - ${m.type || 'Unknown'}] Content: ${m.text || m.content || 'No content available'}\nRelevance: ${m.similarity?.toFixed(2) || 'N/A'}`;
-            }
-        }).join('\n\n');
-        
-        // Add explicit instruction for AI to reference memories when answering
-        memoryContext += '\n\nIMPORTANT: Reference these memories naturally when responding to the user\'s current message. Do not mention or list the memories directly, but incorporate the information seamlessly as if it\'s part of your own knowledge about the user.';
-        
-        logger.info('Enhanced memory context created for AI');
-    } else {
-        logger.info('No relevant memories found');
-    }
+    // Delegate core processing to the Chat Service
+    const serviceResult = await chatService.processUserMessage(userId, sessionIdFromBody, messageFromBody);
 
-    // Get AI response (this will now throw a ServiceError on failure)
-    logger.info('Requesting AI response...');
-    const startTime = Date.now(); // Start timer
-    const aiResponse = await aiService.sendMessage(userId, session_id, message, memoryContext ? { additionalContext: memoryContext } : undefined);
-    const duration = Date.now() - startTime; // Calculate duration
-    logger.info(`AI service call completed in ${duration}ms`); // Log duration
-    
-    // Check for success explicitly (aiService might return success:false on non-exception errors)
-    if (!aiResponse.success) {
-        throw new ServiceError(aiResponse.message || 'AI service failed to process the message.', aiResponse.statusCode || 500);
-    }
-
-    logger.info('AI response received successfully', { hasText: !!aiResponse.text });
-
-    // Record AI response
-    let aiRawDataRecord = null;
-    if (aiResponse.text) { 
-        aiRawDataRecord = await recordRawData({
-            content: aiResponse.text,
-            contentType: 'ai_response',
-            userId: userId,
-            sessionId: session_id,
-            perspectiveOwnerId: userId,
-            subjectId: userId,
-            importanceScore: null
-        });
-        logger.info('AI response recorded in database', { rawDataId: aiRawDataRecord.id });
-    }
-
-    // Return the success response to the client
+    // Return the success response using the standardized format
     res.status(200).json({
-        success: true,
-        session_id,
-        response: { text: aiResponse.text }
+      success: true,
+      data: {
+        session_id: sessionIdFromBody, // Include session_id within data
+        text: serviceResult.text // Main AI response text
+        // Include rawData IDs if needed by frontend?
+        // userRawDataId: serviceResult.userRawDataId,
+        // aiRawDataId: serviceResult.aiRawDataId
+      }
     });
-
-    // --- Asynchronously process memories AFTER responding ---
-    // No need to check userRawDataRecord, it must exist if we got here
-    logger.info(`[MemoryManager Trigger] Scheduling processing for User RawData: ${userRawDataRecord.id}`);
-    memoryManager.processRawData(userRawDataRecord).catch(err => {
-        handleServiceError(err, `background processing for User RawData ${userRawDataRecord.id}`); 
-    });
-
-    if (aiRawDataRecord) {
-        logger.info(`[MemoryManager Trigger] Scheduling processing for AI RawData: ${aiRawDataRecord.id}`);
-        memoryManager.processRawData(aiRawDataRecord).catch(err => {
-            handleServiceError(err, `background processing for AI RawData ${aiRawDataRecord.id}`);
-        });
-    }
-    // ----------------------------------------------------
 
   } catch (error) {
-    // Catch errors from await calls (recordRawData, retrieveMemories, aiService.sendMessage)
-    logger.error('Error during chat processing pipeline:', { error });
-
-    // Try to schedule memory processing for user message if it was recorded before the error
-    if (userRawDataRecord) {
-        logger.info(`[MemoryManager Trigger] Scheduling processing for User RawData ${userRawDataRecord.id} after pipeline error.`);
-        memoryManager.processRawData(userRawDataRecord).catch(err => {
-            handleServiceError(err, `background processing for User RawData ${userRawDataRecord.id} after error`);
-        });
-    }
-
-    // Pass the error to the Express error handling middleware
-    next(error); 
+    // Service layer errors (including wrapped errors) are passed here
+    logger.error('Error caught in sendMessage controller:', { error: error.message });
+    // Pass the error to the centralized Express error handling middleware
+    next(error);
   }
 };
 
@@ -215,22 +89,19 @@ exports.sendMessage = async (req, res, next) => { // Add next for error middlewa
  * Get chat history for a session
  * @route GET /api/chat/history
  */
-exports.getChatHistory = async (req, res, next) => { // Add next
+exports.getChatHistory = async (req, res, next) => {
   try {
     const { session_id } = req.query;
-    
+
     if (!session_id) {
-      return res.status(400).json({
-        success: false,
-        message: 'Session ID is required'
-      });
+      return next(new ServiceError('Session ID is required', 400));
     }
-    
+
     const userId = req.user.id;
-    logger.info('Fetching chat history', { userId, sessionId: req.query.session_id }); // Use logger
-    
-    // Get chat history from raw data
-    const messages = await prisma.rawData.findMany({
+    logger.info('Fetching chat history', { userId, sessionId: session_id });
+
+    // Get chat history from raw data using repository
+    const messages = await rawDataRepository.findMany({
       where: {
         userId: userId,
         sessionId: session_id,
@@ -241,238 +112,289 @@ exports.getChatHistory = async (req, res, next) => { // Add next
       orderBy: {
         createdAt: 'asc'
       },
-      take: 200 // Limit to last 200 messages (100 exchanges)
+      take: memoryConfig.chatHistoryRetrievalLimit
     });
-    
-    // Format messages for client
-    const formattedMessages = messages.map(message => {
-      return {
-        role: message.contentType === 'user_chat' ? 'user' : 'ai',
-        content: message.content,
-        timestamp: message.createdAt
-      };
-    });
-    
+
+    // Format messages for client (remains same)
+    const formattedMessages = messages.map(message => ({
+      role: message.contentType === 'user_chat' ? 'user' : 'ai',
+      content: message.content,
+      timestamp: message.createdAt
+    }));
+
+    // Standardized response
     res.status(200).json({
       success: true,
-      session_id,
-      messages: formattedMessages
+      data: {
+        session_id, // Include session_id within data
+        messages: formattedMessages
+      }
     });
   } catch (error) {
-    // Pass error to middleware
-    next(error); 
+    next(error);
   }
 };
 
 /**
- * Upload a file for AI analysis
+ * Upload a file for AI analysis - delegates logic to fileUploadService.
  * @route POST /api/chat/upload
  */
-exports.uploadFile = (req, res, next) => { // Add next
-  fileUploadService.uploadSingleFile(req, res, async function (err) {
-     let documentContentRawDataRecord = null; // Define here for catch block access
-     try { 
-        // Handle Multer errors specifically
-        if (err instanceof require('multer').MulterError) {
-             const errorResponse = handleServiceError(err, 'file upload (multer)');
-             return res.status(errorResponse.statusCode || 400).json(errorResponse);
-         } else if (err) {
-             // Handle other potential errors during upload setup
-             throw err; // Throw to outer catch / middleware
-         }
+exports.uploadFile = (req, res, next) => {
+  // Use the renamed middleware
+  fileUploadMiddleware.uploadSingleFile(req, res, async function (uploadMiddlewareErr) {
+    const uploadedFilePath = req.file?.path; // Get path for potential cleanup
 
-        // Check if file exists after middleware
+    try {
+        // --- Input Validation --- 
+        // Handle Multer errors first
+        if (uploadMiddlewareErr instanceof require('multer').MulterError) {
+            logger.warn('Multer error during file upload:', { code: uploadMiddlewareErr.code, message: uploadMiddlewareErr.message });
+            // Provide user-friendly message based on code
+            let userMessage = 'File upload error.';
+            if (uploadMiddlewareErr.code === 'LIMIT_FILE_SIZE') {
+                userMessage = 'File is too large.';
+            } else if (uploadMiddlewareErr.code === 'LIMIT_UNEXPECTED_FILE') {
+                userMessage = uploadMiddlewareErr.message || 'Unsupported file type.'; // Use Multer's specific message if available
+            }
+            return next(new ServiceError(userMessage, 400));
+        } else if (uploadMiddlewareErr) {
+            // Handle other potential errors during upload setup (rare)
+            logger.error('Non-Multer error during upload middleware:', uploadMiddlewareErr);
+            return next(uploadMiddlewareErr); // Pass to generic handler
+        }
+
+        // Check if file exists after middleware (shouldn't happen if Multer runs ok)
         if (!req.file) {
-             // Use handleServiceError for consistency
-             const errorResponse = handleServiceError(new Error('No file found after upload processing.'), 'file upload validation');
-             return res.status(errorResponse.statusCode || 400).json(errorResponse);
-         }
+            return next(new ServiceError('No file provided or file rejected by filter.', 400));
+        }
 
-        // Session ID check
-        const { session_id } = req.body;
+        // Check for required body fields
+        const { session_id, message } = req.body;
         if (!session_id) {
-             // Clean up uploaded file
-             fs.unlink(req.file.path, (unlinkErr) => { /* log unlink error */ });
-             const errorResponse = handleServiceError(new Error('Session ID is required'), 'file upload validation');
-             return res.status(errorResponse.statusCode || 400).json(errorResponse);
-         }
+            // Clean up uploaded file if session_id is missing
+            if (uploadedFilePath) fs.unlink(uploadedFilePath, (err) => { if (err) logger.error('Failed to clean up orphaned upload:', err); });
+            return next(new ServiceError('Session ID is required for file upload.', 400));
+        }
 
         const userId = req.user.id;
-        const file = req.file;
-        logger.info('File uploaded successfully via service', { userId, sessionId: session_id, filename: file.filename });
+        const file = req.file; // File object from Multer
+        // --- End Validation --- 
 
-        // Record file upload event
-        const fileEventRawDataRecord = await recordRawData({
-            content: `Uploaded file: ${file.originalname} (${file.mimetype})`,
-            contentType: 'uploaded_file_event',
-            userId: userId,
-            sessionId: session_id,
-            perspectiveOwnerId: userId,
-            importanceScore: 0.8 // Default importance for the event
-        });
-        logger.info('File upload event recorded', { rawDataId: fileEventRawDataRecord.id });
+        logger.info('File upload passed controller validation, delegating to service');
 
-        // --- Determine file type and get AI analysis/summary ---
-        let aiAnalysisResult;
-        const isImage = fileUploadService.allowedMimeTypes.image.includes(file.mimetype);
-        const isSupportedDoc = fileUploadService.allowedMimeTypes.document.includes(file.mimetype);
+        // Delegate core processing to the File Upload Service
+        const serviceResult = await fileUploadService.processUploadedFile(
+            userId,
+            session_id,
+            file, 
+            message // Pass the accompanying message
+        );
 
-        if (isImage) {
-            // *** Handle IMAGE analysis ***
-            logger.info(`Sending image file ${file.originalname} to AI service for analysis...`);
-            // Read file from disk needed for analyzeImage as currently implemented
-            const filePath = file.path;
-            // Ensure buffer is attached if needed by aiService.analyzeImage
-            // If analyzeImage can take a path, this read might be redundant
-            try {
-                file.buffer = fs.readFileSync(filePath); 
-                logger.info(`Read image file into buffer: ${filePath}, buffer size: ${file.buffer.length} bytes`);
-            } catch (readError) {
-                logger.error('Failed to read uploaded image file into buffer:', { path: filePath, error: readError });
-                throw new Error('Could not read uploaded image file for analysis.'); // Throw to outer catch
-            }
-            
-            aiAnalysisResult = await aiService.analyzeImage({
-                userId: userId,
-                sessionId: session_id,
-                file: file // Pass the file object, now including the buffer
-            });
-
-        } else if (isSupportedDoc) {
-            // *** Handle DOCUMENT analysis ***
-            logger.info(`Processing document file ${file.originalname} for text content...`);
-            const fileResult = await processFileContent(file.filename); // Pass filename
-
-            if (fileResult && fileResult.text && !fileResult.text.startsWith('Error processing')) {
-                logger.info(`Extracted text (first 100 chars): ${fileResult.text.substring(0, 100)}...`);
-
-                // --- Record the EXTRACTED DOCUMENT CONTENT for memory processing ---
-                try {
-                    // Set forceImportant=true for document MIME types (per Step 6 in MigrationPlan.md)
-                    const forceImportant = true;
-                    
-                    documentContentRawDataRecord = await recordRawData({
-                        content: fileResult.text,
-                        contentType: 'uploaded_document_content',
-                        userId: userId,
-                        sessionId: session_id,
-                        perspectiveOwnerId: userId,
-                        subjectId: userId,
-                        importanceScore: 0.8, // Explicit importance for document content
-                        forceImportant: forceImportant // Flag to ensure all chunks are kept
-                    });
-                    logger.info('Document content recorded for memory processing', { 
-                        rawDataId: documentContentRawDataRecord.id,
-                        forceImportant: forceImportant
-                    });
-                    
-                    // Trigger immediate consolidation for document uploads
-                    try {
-                        // Import the consolidationAgent or access the queue
-                        const consolidationAgent = require('../services/consolidationAgent');
-                        // Try to add to the orphan queue to trigger consolidation
-                        await consolidationAgent.processOrphanChunks(userId);
-                        logger.info(`[ConsolidationAgent] Triggered immediate consolidation for user ${userId} after document upload`);
-                    } catch (queueError) {
-                        // Just log, don't fail the upload
-                        logger.error(`[ConsolidationAgent] Failed to trigger consolidation after document upload: ${queueError.message}`);
-                    }
-                } catch (dbError) {
-                    handleServiceError(dbError, 'recording document content'); // Log only
-                }
-                // --------------------------------------------------------------------
-
-                // Send extracted text to the AI for analysis/summary
-                const analysisPrompt = `Please analyze or summarize the key points from the following document content:\n\n---\n${fileResult.text}\n---
-`;
-                logger.info('Sending extracted document text to AI service...');
-                aiAnalysisResult = await aiService.sendMessage(userId, session_id, analysisPrompt);
-                if (!aiAnalysisResult.success) {
-                    logger.warn('AI analysis of document content failed.', { error: aiAnalysisResult.error });
-                }
-            } else {
-                logger.error('Failed to extract text from document:', { filename: file.filename, resultText: fileResult ? fileResult.text : 'No result' });
-                aiAnalysisResult = {
-                    success: false,
-                    text: "I'm sorry, but I encountered an error extracting content from the document.",
-                    error: fileResult ? fileResult.text : 'Text extraction failed'
-                };
-            }
-        } else {
-            // This case should ideally not be reached due to fileFilter, but handle defensively
-            logger.error(`File type passed filter but is not recognized: ${file.mimetype}`);
-            aiAnalysisResult = {
-                success: false,
-                text: `Internal error: Unhandled file type (${file.mimetype}).`,
-                error: 'Unhandled file type after filter'
-            };
-        }
-        // --------------------------------------------------------
-
-        logger.info('AI analysis result received', { success: aiAnalysisResult.success });
-
-        // Record the AI's response/message
-        let analysisRawDataRecord = null;
-        if (aiAnalysisResult && aiAnalysisResult.text) {
-            analysisRawDataRecord = await recordRawData({
-                content: aiAnalysisResult.text,
-                contentType: 'ai_response',
-                userId: userId,
-                sessionId: session_id,
-                perspectiveOwnerId: userId,
-                subjectId: userId,
-                importanceScore: null // Let MemoryManager evaluate AI response importance
-            });
-            logger.info('AI analysis response/error recorded in database', { rawDataId: analysisRawDataRecord.id });
+        // Check service result success explicitly
+        if (!serviceResult.success) {
+            // This case *should* ideally be caught by the service throwing an error,
+            // but handle defensively. If the service returns success: false but doesn't throw,
+            // pass it as a generic server error to the error handler.
+            logger.error('FileUpload service indicated failure but did not throw an error', { serviceResult });
+            // Pass a generic error to the handler
+            return next(new ServiceError(serviceResult.message || 'File processing failed in service', 500));
         }
 
-        // Return result to client NOW
+        // Standardized SUCCESS response
         res.status(200).json({
-            success: aiAnalysisResult.success,
-            message: aiAnalysisResult.success 
-                        ? 'File processed successfully' 
-                        : (aiAnalysisResult.text || 'Processing failed'),
-            fileInfo: {
-                filename: file.filename,
-                originalname: file.originalname,
-                mimetype: file.mimetype,
-                size: file.size
-            },
-            aiResponse: { // Return consistent structure
-                text: aiAnalysisResult.text,
-                ...(aiAnalysisResult.error && { error: aiAnalysisResult.error }) 
+            success: true,
+            data: {
+                message: 'File processed successfully', // Confirmation message
+                fileInfo: {
+                    // filename: file.filename, // Temporary server filename might not be useful to client
+                    originalname: file.originalname,
+                    mimetype: file.mimetype,
+                    size: file.size
+                },
+                analysisText: serviceResult.message // Use a clearer key for the AI text response
+                // Include rawData IDs if needed by frontend?
+                // fileEventRawDataId: serviceResult.fileEventRawDataId,
+                // analysisRawDataId: serviceResult.analysisRawDataId
             }
         });
-
-        // --- Asynchronously process memories AFTER responding to client ---
-        if (documentContentRawDataRecord) {
-            logger.info(`[MemoryManager Trigger] Scheduling processing for Document Content RawData: ${documentContentRawDataRecord.id}`);
-            memoryManager.processRawData(documentContentRawDataRecord).catch(err => {
-                handleServiceError(err, `background processing for Document Content RawData ${documentContentRawDataRecord.id}`);
-            });
-        }
-        if (analysisRawDataRecord) {
-            logger.info(`[MemoryManager Trigger] Scheduling processing for File Analysis RawData: ${analysisRawDataRecord.id}`);
-            memoryManager.processRawData(analysisRawDataRecord).catch(err => {
-                handleServiceError(err, `background processing for File Analysis RawData ${analysisRawDataRecord.id}`);
-            });
-        }
-        // === End: Analysis and DB recording logic ===
 
     } catch (error) {
-        // Catch errors from the main async logic within the middleware callback
-        logger.error('Error during upload file processing:', { error });
-
-        // Try to process document content even if analysis failed
-        if (documentContentRawDataRecord) {
-            logger.info(`[MemoryManager Trigger] Scheduling processing for Document Content RawData: ${documentContentRawDataRecord.id} after error.`);
-            memoryManager.processRawData(documentContentRawDataRecord).catch(err => {
-                handleServiceError(err, `background processing for Document Content RawData ${documentContentRawDataRecord.id} after error`);
-            });
-        }
+        // Catch errors from the service layer or validation
+        logger.error('Error caught in uploadFile controller:', { error: error.message });
         
-        // Pass the error to the Express error handling middleware
-        next(error); 
+        // Pass the error to the centralized Express error handling middleware
+        next(error);
     }
   }); // End of upload middleware callback
+};
+
+/**
+ * Upload a file asynchronously (returns immediately with a jobId)
+ * @route POST /api/chat/upload/async
+ */
+exports.uploadFileAsync = (req, res, next) => {
+  // Use the renamed middleware
+  fileUploadMiddleware.uploadSingleFile(req, res, async function (uploadMiddlewareErr) {
+    const uploadedFilePath = req.file?.path; // Get path for potential cleanup
+
+    try {
+      // --- Input Validation --- 
+      // Handle Multer errors first
+      if (uploadMiddlewareErr instanceof require('multer').MulterError) {
+        logger.warn('Multer error during file upload:', { code: uploadMiddlewareErr.code, message: uploadMiddlewareErr.message });
+        // Provide user-friendly message based on code
+        let userMessage = 'File upload error.';
+        if (uploadMiddlewareErr.code === 'LIMIT_FILE_SIZE') {
+          userMessage = 'File is too large.';
+        } else if (uploadMiddlewareErr.code === 'LIMIT_UNEXPECTED_FILE') {
+          userMessage = uploadMiddlewareErr.message || 'Unsupported file type.'; // Use Multer's specific message if available
+        }
+        return next(new ServiceError(userMessage, 400));
+      } else if (uploadMiddlewareErr) {
+        // Handle other potential errors during upload setup (rare)
+        logger.error('Non-Multer error during upload middleware:', uploadMiddlewareErr);
+        return next(uploadMiddlewareErr); // Pass to generic handler
+      }
+
+      // Check if file exists after middleware (shouldn't happen if Multer runs ok)
+      if (!req.file) {
+        return next(new ServiceError('No file provided or file rejected by filter.', 400));
+      }
+
+      // Check for required body fields
+      const { session_id, message } = req.body;
+      if (!session_id) {
+        // Clean up uploaded file if session_id is missing
+        if (uploadedFilePath) fs.unlink(uploadedFilePath, (err) => { if (err) logger.error('Failed to clean up orphaned upload:', err); });
+        return next(new ServiceError('Session ID is required for file upload.', 400));
+      }
+
+      const userId = req.user.id;
+      const file = req.file; // File object from Multer
+
+      // Generate a unique job ID for tracking
+      const jobId = uuidv4();
+      
+      // Move the file to a persistent location to survive after response
+      const persistentDir = path.join(__dirname, '../../uploads/pending');
+      if (!fs.existsSync(persistentDir)) {
+        fs.mkdirSync(persistentDir, { recursive: true });
+      }
+      
+      const persistentFilePath = path.join(persistentDir, `${jobId}-${file.originalname}`);
+      fs.copyFileSync(file.path, persistentFilePath);
+      
+      // Clean up the original temp file
+      if (uploadedFilePath) {
+        fs.unlink(uploadedFilePath, (unlinkErr) => {
+          if (unlinkErr) logger.error('Error cleaning up temp uploaded file:', { path: uploadedFilePath, error: unlinkErr });
+        });
+      }
+
+      // Create a placeholder record to track the job status
+      await prisma.fileUploadJob.create({
+        data: {
+          id: jobId,
+          userId: userId,
+          sessionId: session_id,
+          status: 'PENDING',
+          filename: file.originalname,
+          filePath: persistentFilePath,
+          message: message || '',
+          fileSize: file.size,
+          mimeType: file.mimetype,
+          createdAt: new Date()
+        }
+      });
+
+      // Queue the job for background processing
+      await addMemoryJob('processFileUpload', {
+        jobId,
+        userId,
+        sessionId: session_id,
+        message,
+        filePath: persistentFilePath,
+        originalname: file.originalname,
+        mimetype: file.mimetype,
+        size: file.size
+      });
+
+      // Return 202 Accepted with the job ID
+      res.status(202).json({
+        success: true,
+        data: {
+          message: 'File upload accepted for processing',
+          jobId: jobId,
+          status: 'PENDING',
+          statusUrl: `/api/chat/upload/status/${jobId}`
+        }
+      });
+
+    } catch (error) {
+      // Catch errors during job creation
+      logger.error('Error caught in uploadFileAsync controller:', { error: error.message });
+      
+      // Pass the error to the centralized Express error handling middleware
+      next(error);
+    }
+  });
+};
+
+/**
+ * Get the status of an asynchronous file upload
+ * @route GET /api/chat/upload/status/:jobId
+ */
+exports.getUploadStatus = async (req, res, next) => {
+  try {
+    const { jobId } = req.params;
+    const userId = req.user.id;
+
+    if (!jobId) {
+      return next(new ServiceError('Job ID is required', 400));
+    }
+
+    // Find the job in the database
+    const job = await prisma.fileUploadJob.findUnique({
+      where: { id: jobId }
+    });
+
+    if (!job) {
+      return next(new ServiceError('Upload job not found', 404));
+    }
+
+    // Security check - only the user who created the job can check its status
+    if (job.userId !== userId) {
+      return next(new ServiceError('Unauthorized to access this upload job', 403));
+    }
+
+    // Format the response based on status
+    let response = {
+      success: true,
+      data: {
+        jobId: job.id,
+        status: job.status,
+        fileInfo: {
+          originalname: job.filename,
+          mimetype: job.mimeType,
+          size: job.fileSize
+        },
+        createdAt: job.createdAt,
+        completedAt: job.completedAt
+      }
+    };
+
+    // Add result data if job is completed
+    if (job.status === 'COMPLETED' && job.resultData) {
+      response.data.result = {
+        analysisText: job.resultData.analysisText,
+        rawDataIds: job.resultData.rawDataIds
+      };
+    } else if (job.status === 'FAILED') {
+      response.data.error = job.errorMessage || 'Unknown error occurred during processing';
+    }
+
+    res.status(200).json(response);
+  } catch (error) {
+    next(error);
+  }
 }; 

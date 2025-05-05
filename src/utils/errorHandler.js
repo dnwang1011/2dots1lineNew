@@ -1,44 +1,60 @@
 const logger = require('./logger').childLogger('ErrorHandler');
 
 /**
- * Handles common API and processing errors, returning a standardized response.
+ * Custom error class for service layer errors.
+ */
+class ServiceError extends Error {
+  constructor(message, statusCode = 500, originalError = null, errorCode = null) {
+    super(message);
+    this.name = 'ServiceError';
+    this.statusCode = statusCode;
+    this.originalError = originalError; // Store original error for context if needed
+    this.errorCode = errorCode; // Add optional errorCode property
+    if (Error.captureStackTrace) {
+      Error.captureStackTrace(this, ServiceError);
+    }
+  }
+}
+
+/**
+ * Centralized handler for service layer errors.
+ * Ensures that errors thrown are always instances of ServiceError.
+ * Logs the error appropriately.
  * 
  * @param {Error} error - The error object caught.
- * @param {string} [context='processing'] - Context where the error occurred (e.g., 'AI interaction', 'database operation').
- * @param {string} [userFallbackMessage='An internal error occurred. Please try again later.'] - Generic message for the user.
- * @returns {object} Standardized error response object { success: false, message: string, error?: string }.
+ * @param {string} [context='Unknown Context'] - Context where the error occurred.
+ * @returns {ServiceError} - Either the original error if it was a ServiceError, or a new wrapped ServiceError.
  */
-function handleServiceError(error, context = 'processing', userFallbackMessage = 'An internal error occurred. Please try again later.') {
-  logger.error(`Error during ${context}:`, { error });
-
-  let responseMessage = userFallbackMessage;
-  let statusCode = 500; // Default to Internal Server Error
-
-  // Specific error handling (add more as needed)
-  if (error.status === 503 || error.message.includes('Service Unavailable') || error.message.includes('overloaded')) {
-    responseMessage = 'The service is temporarily unavailable due to high load. Please try again shortly.';
-    statusCode = 503;
-  } else if (error.status === 401 || error.message.includes('Authentication required')) {
-    responseMessage = 'Authentication failed. Please sign in again.';
-    statusCode = 401;
-  } else if (error.status === 400 || error.name === 'ValidationError') {
-     responseMessage = `Invalid request: ${error.message || 'Check input data.'}`;
-     statusCode = 400;
-  } 
-  // Add more specific error checks here based on error types or messages
-
-  const response = {
-    success: false,
-    message: responseMessage, // User-facing message
-    statusCode: statusCode // For potential use in setting HTTP status
-  };
-
-  // Include detailed error message in non-production environments
-  if (process.env.NODE_ENV !== 'production') {
-    response.error = error.message; // Internal error details
+function handleServiceError(error, context = 'Unknown Context') {
+  if (error instanceof ServiceError) {
+    // Log existing ServiceError with context - ensure logging doesn't throw!
+    try {
+      logger.error(`ServiceError in ${context}: ${error.message}`, { 
+        statusCode: error.statusCode, 
+        errorCode: error.errorCode, // Log errorCode if present
+        originalError: error.originalError?.message, // Log original message if present
+        stack: error.stack 
+      });
+    } catch (logError) {
+      console.error("!!! Logging failed in handleServiceError !!!", logError);
+    }
+    return error; // Return the original ServiceError
+  } else {
+    // Wrap other errors (Error objects or other types)
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    // Log the unexpected error
+    try {
+        logger.error(`Unhandled error in ${context}: ${errorMessage}`, { 
+            originalError: error, // Log the full original error object
+            stack: error?.stack 
+        });
+    } catch (logError) {
+        console.error("!!! Logging failed in handleServiceError (wrapping) !!!", logError);
+    }
+    // Return a new generic ServiceError, including the original error
+    // Assign a generic errorCode for unexpected errors
+    return new ServiceError(`Internal server error in ${context}. Details: ${errorMessage}`, 500, error, 'INTERNAL_SERVER_ERROR'); 
   }
-
-  return response;
 }
 
 /**
@@ -51,24 +67,30 @@ function handleServiceError(error, context = 'processing', userFallbackMessage =
  * @param {NextFunction} next - Express next function.
  */
 function expressErrorHandler(err, req, res, next) {
-    // Use the centralized handler to format the error
-    const errorResponse = handleServiceError(err, `route ${req.method} ${req.originalUrl}`);
+    // Ensure the error is a ServiceError using the centralized handler
+    const serviceError = handleServiceError(err, `route ${req.method} ${req.originalUrl}`);
 
     // If headers already sent, delegate to default Express error handler
     if (res.headersSent) {
-        return next(err);
+        return next(serviceError); // Pass the processed error
     }
 
-    res.status(errorResponse.statusCode || 500).json({
+    // Standardized error response format
+    const statusCode = serviceError.statusCode || 500;
+    res.status(statusCode).json({
         success: false,
-        message: errorResponse.message, // User-friendly message
-        // Only include detailed error stack in development
-        error: process.env.NODE_ENV === 'development' ? err.stack : undefined
+        error: {
+            code: serviceError.errorCode || (statusCode >= 500 ? 'INTERNAL_SERVER_ERROR' : 'REQUEST_ERROR'), // Provide a default code
+            message: serviceError.message // User-friendly message from ServiceError
+            // Optionally include details in development?
+            // details: process.env.NODE_ENV === 'development' ? serviceError.originalError?.stack : undefined
+        }
     });
 }
 
 
 module.exports = {
   handleServiceError,
-  expressErrorHandler
+  expressErrorHandler,
+  ServiceError // Export the class
 }; 

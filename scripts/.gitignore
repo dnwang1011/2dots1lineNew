@@ -1,0 +1,5 @@
+# Ignore all log files
+logs/*.log
+
+# But track the logs directory itself
+!logs/.gitkeep 

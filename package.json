@@ -5,12 +5,38 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
+    "start:all": "./scripts/startup/start.sh",
     "dev": "nodemon src/index.js",
+    "worker:memory": "node src/workers/memoryProcessor.worker.js",
+    "worker:episode": "node src/workers/episodeAgent.worker.js",
+    "lint": "eslint --config config/lint/.eslintrc.js .",
+    "format": "prettier --config config/lint/.prettierrc.js --write .",
     "init-db": "node scripts/init-db.js",
     "db:seed": "npx prisma db seed",
     "db:migrate": "npx prisma migrate dev",
     "build": "npx prisma generate",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "jest --config config/jest.config.js",
+    "test:unit": "jest --config config/jest.config.js --testPathPattern=tests/unit",
+    "test:integration": "jest --config config/jest.config.js --testPathPattern=tests/integration",
+    "test:e2e": "jest --config config/jest.config.js --testPathPattern=tests/e2e",
+    "test:setup": "node tests/helpers/setup-test-db.js",
+    "test:db:migrate": "npx dotenv -e tests/env/.env.test -- npx prisma migrate deploy",
+    "test:weaviate": "node tests/helpers/scripts/test-weaviate-schema.js",
+    "test:memory": "node tests/helpers/scripts/test-memory-retrieval.js",
+    "test:episodes": "node tests/helpers/scripts/test-episode-retrieval.js",
+    "test:knowledge": "node tests/helpers/scripts/test-knowledge-node.js",
+    "test:job": "node tests/helpers/scripts/test-job.js",
+    "test:redis": "node tests/helpers/scripts/test-redis-config.js",
+    "test:cleanup": "./tests/helpers/cleanup-test-files.sh",
+    "test:migrate-tools": "./tests/helpers/migrate-diagnostic-tools.sh",
+    "memory:monitor": "node scripts/monitoring/monitor-memory-system.js",
+    "memory:check-episodes": "node tests/helpers/scripts/diagnostics/check-weaviate-episodes.js",
+    "memory:check-schema": "node tests/helpers/scripts/diagnostics/check-weaviate-schema.js",
+    "memory:check-retrieval": "node tests/helpers/scripts/diagnostics/check-memory-retrieval.js",
+    "memory:check-chunks": "node tests/helpers/scripts/diagnostics/check-chunks.js",
+    "memory:fix-episodes": "node scripts/fixes/fix-episode-embedding.js",
+    "memory:diagnose-retrieval": "node tests/helpers/scripts/diagnostics/check-memory-retrieval.js",
+    "backup": "node scripts/monitoring/backup-system.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.0",
@@ -43,10 +69,20 @@
     "winston": "^3.17.0"
   },
   "devDependencies": {
+    "dotenv-cli": "^8.0.0",
+    "eslint": "^8.57.1",
+    "eslint-config-airbnb-base": "^15.0.0",
+    "eslint-config-prettier": "^10.1.2",
+    "eslint-plugin-import": "^2.31.0",
+    "eslint-plugin-prettier": "^5.2.6",
+    "jest": "^29.7.0",
     "nodemon": "^3.0.2",
-    "prisma": "^5.10.0"
+    "prettier": "^3.5.3",
+    "prisma": "^5.10.0",
+    "supertest": "^7.1.0"
   },
   "prisma": {
     "seed": "node prisma/seed.js"
-  }
+  },
+  "keywords": []
 }

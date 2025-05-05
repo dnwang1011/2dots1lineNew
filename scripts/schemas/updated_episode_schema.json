@@ -1,0 +1,26 @@
+{
+  "class": "EpisodeEmbedding",
+  "description": "An episode with its centroid vector",
+  "vectorIndexType": "hnsw",
+  "vectorizer": "none",
+  "vectorIndexConfig": {
+    "distance": "cosine"
+  },
+  "properties": [
+    {
+      "name": "episodeDbId",
+      "description": "ID of the Episode in the database",
+      "dataType": ["text"]
+    },
+    {
+      "name": "title",
+      "description": "Title of the episode",
+      "dataType": ["text"]
+    },
+    {
+      "name": "userId",
+      "description": "ID of the user this episode belongs to",
+      "dataType": ["text"]
+    }
+  ]
+} 
