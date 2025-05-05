@@ -1,0 +1,24 @@
+# Development files
+.git
+.github
+node_modules
+*.log
+
+# Testing files
+/tests
+/coverage
+
+# Environment files (except production)
+.env
+.env.development
+.env.local
+.env.test
+
+# Do NOT ignore Prisma
+!prisma
+!.env.production
+
+# Other
+.DS_Store
+/docs
+README.md 
