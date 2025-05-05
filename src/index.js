@@ -13,14 +13,8 @@ const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const { PrismaClient } = require('@prisma/client');
 const path = require('path');
-const { initializeDatabase, initializeOntology } = require('./utils/db-init');
 const logger = require('./utils/logger');
 const { expressErrorHandler } = require('./utils/errorHandler');
-
-// ---> Import Agents <---
-const consolidationAgent = require('./services/consolidationAgent');
-const thoughtAgent = require('./services/thoughtAgent');
-// ---> End Imports <---
 
 // Initialize Express app
 const app = express();
@@ -42,11 +36,13 @@ app.use((req, res, next) => {
 // Serve static files from public folder
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Create uploads directory
-const fs = require('fs');
-const uploadsDir = path.join(__dirname, '../uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+// Create uploads directory if running in development
+if (process.env.NODE_ENV !== 'production') {
+  const fs = require('fs');
+  const uploadsDir = path.join(__dirname, '../uploads');
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
 }
 
 // Import routes
@@ -94,8 +90,12 @@ app.get('*', (req, res) => {
 // Centralized Error Handling Middleware
 app.use(expressErrorHandler);
 
-// Check if running in development mode or directly (not as a Vercel serverless function)
+// Only start the server when running directly (not as a module in Vercel)
 if (process.env.NODE_ENV !== 'production' || require.main === module) {
+  const { initializeDatabase, initializeOntology } = require('./utils/db-init');
+  const consolidationAgent = require('./services/consolidationAgent');
+  const thoughtAgent = require('./services/thoughtAgent');
+  
   // Start server and initialize database
   async function startServer() {
     try {
