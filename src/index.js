@@ -6,7 +6,6 @@ require('dotenv').config();
 // Set default Weaviate host if not defined
 if (!process.env.WEAVIATE_HOST) {
   process.env.WEAVIATE_HOST = 'http://localhost:8080';
-  logger.info('WEAVIATE_HOST not found in environment, using default:', process.env.WEAVIATE_HOST);
 }
 
 const express = require('express');
@@ -95,83 +94,82 @@ app.get('*', (req, res) => {
 // Centralized Error Handling Middleware
 app.use(expressErrorHandler);
 
-// Export the app instance for testing with supertest
-module.exports.app = app;
+// Check if running in development mode or directly (not as a Vercel serverless function)
+if (process.env.NODE_ENV !== 'production' || require.main === module) {
+  // Start server and initialize database
+  async function startServer() {
+    try {
+      // Initialize database
+      const dbInitialized = await initializeDatabase();
+      if (!dbInitialized) {
+        logger.error('Failed to initialize database. Exiting...');
+        process.exit(1);
+      }
+      
+      // Initialize ontology (after database is confirmed working)
+      await initializeOntology();
+      
+      // ---> Start Agent Workers/Schedulers <---
+      logger.info('[Bootstrap] Starting background agents...');
+      consolidationAgent.startConsolidationWorker(); 
+      thoughtAgent.scheduleNightlyThoughtGeneration();
+      logger.info('[Bootstrap] Background agents initialized.');
+      // ---> End Agent Start <---
+      
+      // Start HTTP server
+      const server = app.listen(PORT, () => {
+        logger.info(`Server running on port ${PORT}`);
+        logger.info(`Access the application at http://localhost:${PORT}`);
+        
+        // Log configuration status
+        logger.info('Configuration status:');
+        logger.info(`- Gemini API Key: ${process.env.GOOGLE_AI_API_KEY ? 'Configured' : 'Missing'}`);
+        logger.info(`- JWT Secret: ${process.env.JWT_SECRET ? 'Configured' : 'Missing'}`);
+      });
 
-// Start server and initialize database
-async function startServer() {
-  try {
-    // Initialize database
-    const dbInitialized = await initializeDatabase();
-    if (!dbInitialized) {
-      logger.error('Failed to initialize database. Exiting...');
+      // Expose server instance for graceful shutdown
+      module.exports.server = server;
+    } catch (err) {
+      logger.error('Failed to start server:', err);
       process.exit(1);
     }
-    
-    // Initialize ontology (after database is confirmed working)
-    await initializeOntology();
-    
-    // ---> Start Agent Workers/Schedulers <---
-    logger.info('[Bootstrap] Starting background agents...');
-    consolidationAgent.startConsolidationWorker(); 
-    thoughtAgent.scheduleNightlyThoughtGeneration();
-    logger.info('[Bootstrap] Background agents initialized.');
-    // ---> End Agent Start <---
-    
-    // Start HTTP server
-    const server = app.listen(PORT, () => {
-      logger.info(`Server running on port ${PORT}`);
-      logger.info(`Access the application at http://localhost:${PORT}`);
-      
-      // Log configuration status
-      logger.info('Configuration status:');
-      logger.info(`- Gemini API Key: ${process.env.GOOGLE_AI_API_KEY ? 'Configured' : 'Missing'}`);
-      logger.info(`- JWT Secret: ${process.env.JWT_SECRET ? 'Configured' : 'Missing'}`);
-    });
-
-    // Expose server instance for graceful shutdown
-    module.exports.server = server;
-  } catch (err) {
-    logger.error('Failed to start server:', err);
-    process.exit(1);
   }
+
+  startServer();
+
+  // Handle graceful shutdown
+  process.on('SIGINT', async () => {
+    await prisma.$disconnect();
+    // Optional: Add agent shutdown logic here if needed
+    await consolidationAgent.shutdown();
+    await thoughtAgent.shutdown();
+    // ---> End Agent Shutdown <---
+    logger.info('Database connection closed.');
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', async () => {
+    await prisma.$disconnect();
+    // Optional: Add agent shutdown logic here if needed
+    await consolidationAgent.shutdown();
+    await thoughtAgent.shutdown();
+    // ---> End Agent Shutdown <---
+    logger.info('Database connection closed.');
+    process.exit(0);
+  });
+
+  // Optional: Handle unhandled promise rejections and uncaught exceptions
+  process.on('unhandledRejection', (reason, promise) => {
+    logger.error('Unhandled Rejection at:', { promise, reason });
+    // Application specific logging, throwing an error, or other logic here
+  });
+
+  process.on('uncaughtException', (error) => {
+    logger.error('Uncaught Exception thrown:', { error });
+    // It is generally recommended to restart the process after an uncaught exception
+    process.exit(1);
+  });
 }
 
-startServer();
-
-// Handle graceful shutdown
-process.on('SIGINT', async () => {
-  await prisma.$disconnect();
-  // Optional: Add agent shutdown logic here if needed
-  const consolidationAgent = require('./services/consolidationAgent');
-  const thoughtAgent = require('./services/thoughtAgent');
-  await consolidationAgent.shutdown();
-  await thoughtAgent.shutdown();
-  // ---> End Agent Shutdown <---
-  logger.info('Database connection closed.');
-  process.exit(0);
-});
-
-process.on('SIGTERM', async () => {
-  await prisma.$disconnect();
-  // Optional: Add agent shutdown logic here if needed
-  const consolidationAgent = require('./services/consolidationAgent');
-  const thoughtAgent = require('./services/thoughtAgent');
-  await consolidationAgent.shutdown();
-  await thoughtAgent.shutdown();
-  // ---> End Agent Shutdown <---
-  logger.info('Database connection closed.');
-  process.exit(0);
-});
-
-// Optional: Handle unhandled promise rejections and uncaught exceptions
-process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Unhandled Rejection at:', { promise, reason });
-  // Application specific logging, throwing an error, or other logic here
-});
-
-process.on('uncaughtException', (error) => {
-  logger.error('Uncaught Exception thrown:', { error });
-  // It is generally recommended to restart the process after an uncaught exception
-  process.exit(1);
-}); 
+// For Vercel serverless functions, export the Express app instance
+module.exports = app; 
