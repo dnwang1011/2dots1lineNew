@@ -38,7 +38,7 @@ app.use((req, res, next) => {
 });
 
 // --- Static Files ---
-// Serve static files from the 'public' directory in the *root* of the deployment
+// Serve static files from the 'public' directory relative to vercel.js location
 app.use(express.static(path.join(__dirname, 'public')));
 
 // --- API Routes ---
@@ -72,10 +72,11 @@ app.get('*', (req, res, next) => {
   if (req.originalUrl.startsWith('/api')) {
     return next(); // Let the API 404 handler manage it
   }
-  // Serve the main HTML file from the 'public' directory in the root
-  res.sendFile(path.join(__dirname, 'public', 'chat.html'), (err) => {
+  // Serve the main HTML file from the 'public' directory relative to vercel.js
+  const filePath = path.join(__dirname, 'public', 'chat.html');
+  res.sendFile(filePath, (err) => {
     if (err) {
-      logger.error(`Error sending SPA file: ${err.message}`);
+      logger.error(`Error sending SPA file (${filePath}): ${err.message}`);
       // Avoid sending error if headers already sent (e.g., by static middleware)
       if (!res.headersSent) {
          res.status(500).send('Error serving frontend application.');
