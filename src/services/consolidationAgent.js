@@ -6,21 +6,27 @@ const { PrismaClient } = require('@prisma/client');
 // const prisma = new PrismaClient();
 const { prisma } = require('../db/prisma'); // Use the singleton instance
 const logger = require('../utils/logger').childLogger('ConsolidationAgent');
-const weaviateClientUtil = require('../utils/weaviateClient');
+const weaviateClientUtil = require('../utils/weaviateClient'); // No longer needed directly
+const { storeObjectInWeaviate } = require('../utils/weaviateHelper'); // USE SHARED HELPER
 const { Worker, Queue } = require('bullmq');
 // const config = require('../config'); // Removed unused config import
 const redisConfig = require('../utils/redisConfig');
-const aiService = require('./ai.service'); // For generating narratives
+// const aiService = require('./ai.service'); // No longer directly needed here for narrative
+const { generateTitleAndNarrative } = require('../utils/aiHelper'); // USE SHARED HELPER
 const dbscan = require('density-clustering').DBSCAN; // For clustering
 const { v4: uuidv4 } = require('uuid'); // Import uuid
 const aiConfig = require('../../config/ai.config'); // Import aiConfig
+const episodicConfig = require('../../config/episodic.config'); // Import episodic config
+const queueConfig = require('../../config/queue.config'); // Import queue config
+const { expandVector } = require('../utils/vectorUtils'); // IMPORT expandVector
 
-// Configuration parameters
-const ORPHAN_QUEUE_NAME = 'orphan-chunks';
-const CONSOLIDATION_THRESHOLD = 2; // Min number of orphan chunks to trigger consolidation
-const DBSCAN_EPSILON = 0.30; // DBSCAN distance threshold (1 - cosine similarity)
-const DBSCAN_MIN_POINTS = 2; // DBSCAN minimum points to form a cluster
-const MAX_CHUNKS_PER_EPISODE = 30; // Maximum number of chunks to include in a single episode
+// Import configuration parameters from centralized config files
+const ORPHAN_QUEUE_NAME = queueConfig.queues.orphanChunks;
+const CONSOLIDATION_THRESHOLD = episodicConfig.consolidationThreshold;
+const DBSCAN_EPSILON = episodicConfig.dbscan.epsilon;
+const DBSCAN_MIN_POINTS = episodicConfig.dbscan.minPoints;
+const MAX_CHUNKS_PER_EPISODE = episodicConfig.maxChunksPerEpisode;
+const ORPHAN_CLUSTER_CREATION_THRESHOLD = episodicConfig.orphanClusterCreationThreshold;
 
 // Initialize the queue for orphan chunks
 let orphanQueue = null;
@@ -169,12 +175,25 @@ async function processOrphanChunks(userId, triggerChunkId) {
       const clusterChunkIds = limitedIndices.map(idx => chunkIds[idx]);
       const clusterVectors = limitedIndices.map(idx => vectors[idx]);
       
-      // Calculate the centroid vector (average of all vectors in the cluster)
-      const centroidVector = calculateCentroid(clusterVectors);
+      let centroidVector = calculateCentroid(clusterVectors);
       if (!centroidVector || centroidVector.length === 0) {
           logger.warn(`[ConsolidationAgent] User ${userId}: Failed to calculate centroid for cluster ${i}. Skipping cluster.`);
           continue;
       }
+
+      // --- EXPAND CENTROID VECTOR ---
+      const targetDimension = aiConfig.embeddingDimension || 1536;
+      if (centroidVector.length !== targetDimension) {
+        logger.info(`[ConsolidationAgent] User ${userId}: Expanding episode centroid for cluster ${i} from ${centroidVector.length} to ${targetDimension}`);
+        const expandedCentroid = await expandVector(centroidVector, targetDimension);
+        if (!expandedCentroid || expandedCentroid.length !== targetDimension) {
+            logger.warn(`[ConsolidationAgent] User ${userId}: Failed to expand centroid vector for cluster ${i}. Using original centroid. Vector length: ${centroidVector.length}`);
+            // Decide if we should proceed with unexpanded or skip. For now, proceed with original to see if Weaviate still complains, or if Prisma is the issue with varying dim.
+        } else {
+            centroidVector = expandedCentroid;
+        }
+      }
+      // --- END EXPAND CENTROID VECTOR ---
       
       // Fetch the full chunks for narrative generation
       logger.debug(`[ConsolidationAgent] User ${userId}: Fetching full chunk data for cluster ${i}`);
@@ -186,7 +205,10 @@ async function processOrphanChunks(userId, triggerChunkId) {
       
       // Generate a narrative for the episode using AI
       logger.debug(`[ConsolidationAgent] User ${userId}: Generating narrative for cluster ${i}`);
-      const { title, narrative } = await generateEpisodeNarrative(clusterChunks);
+      const { title, narrative } = await generateTitleAndNarrative(
+        clusterChunks.map(c => c.text),
+        `Consolidated Episode (${i})` // Provide context description
+      );
       logger.debug(`[ConsolidationAgent] User ${userId}: Generated narrative for cluster ${i}: Title="${title}"`);
       
       // Create the episode
@@ -202,7 +224,7 @@ async function processOrphanChunks(userId, triggerChunkId) {
             }
           });
           episodesCreated++;
-          logger.info(`[ConsolidationAgent] User ${userId}: Created episode "${title}" (${episode.id}) from cluster ${i} with ${limitedIndices.length} chunks.`);
+          logger.info(`[ConsolidationAgent] User ${userId}: Created episode "${title}" (${episode.id}) from cluster ${i} with ${limitedIndices.length} chunks. Centroid dim: ${centroidVector.length}.`);
           
           // Create ChunkEpisode entries for each chunk in the cluster
           logger.debug(`[ConsolidationAgent] User ${userId}: Linking ${clusterChunkIds.length} chunks to episode ${episode.id}`);
@@ -217,10 +239,21 @@ async function processOrphanChunks(userId, triggerChunkId) {
           }
           logger.debug(`[ConsolidationAgent] User ${userId}: Finished linking chunks for episode ${episode.id}`);
           
-          // Store the episode in Weaviate
-          logger.debug(`[ConsolidationAgent] User ${userId}: Storing episode ${episode.id} in Weaviate`);
-          await storeEpisodeInWeaviate(episode); // Ensure this logs errors internally
-          logger.debug(`[ConsolidationAgent] User ${userId}: Finished storing episode ${episode.id} in Weaviate`);
+          // USE SHARED Weaviate utility
+          const weaviateProperties = {
+            episodeDbId: episode.id,
+            title: episode.title,
+            narrative: episode.narrative,
+            userId: episode.userId,
+            createdAt: episode.createdAt.toISOString(),
+          };
+          const weaviateId = await storeObjectInWeaviate('EpisodeEmbedding', weaviateProperties, episode.centroidVec);
+          if (weaviateId) {
+            logger.debug(`[ConsolidationAgent] User ${userId}: Finished storing episode ${episode.id} in Weaviate (Weaviate ID: ${weaviateId})`);
+          } else {
+            logger.warn(`[ConsolidationAgent] User ${userId}: Failed to store episode ${episode.id} in Weaviate.`);
+            // Decide if this is a critical failure for the episode creation process
+          }
           
       } catch(episodeCreateError) {
           logger.error(`[ConsolidationAgent] User ${userId}: Failed to create episode or link chunks for cluster ${i}:`, { error: episodeCreateError });
@@ -232,7 +265,7 @@ async function processOrphanChunks(userId, triggerChunkId) {
     // (In a production system, we might want to be more selective about which chunks we've processed)
     // await cleanupProcessedChunks(userId, chunkIds); // Commented out as per original code
     
-    logger.info(`[ConsolidationAgent] User ${userId}: Completed processing job. Created ${episodesCreated} episodes.`);
+    logger.info(`[ConsolidationAgent] User ${userId}: Completed processing job. Created ${episodesCreated} episodes in total.`);
   } catch (error) {
     logger.error(`[ConsolidationAgent] User ${userId}: Unhandled error processing orphan chunks (triggered by ${triggerChunkId || 'unknown'}):`, { error });
     throw error; // Re-throw error so BullMQ knows the job failed
@@ -303,7 +336,7 @@ async function getOrphanedChunks(userId) {
 async function getChunkVectorFromWeaviate(chunkId) {
   const client = weaviateClientUtil.getClient();
   if (!client) {
-    logger.error('[ConsolidationAgent] Weaviate client not available');
+    logger.error('[ConsolidationAgent] Weaviate client not available for getChunkVectorFromWeaviate');
     return null;
   }
   
@@ -384,115 +417,6 @@ function calculateCentroid(vectors) {
   }
   
   return centroid;
-}
-
-/**
- * Generate a title and narrative for an episode based on its chunks
- * @param {Array} chunks - Array of ChunkEmbedding objects
- * @returns {Promise<Object>} Object with title and narrative
- */
-async function generateEpisodeNarrative(chunks) {
-  try {
-    // Combine chunk texts for context
-    const MAX_NARRATIVE_INPUT_CHARS = 8000; // Increased limit
-    const chunksText = chunks
-      .map(chunk => chunk.text)
-      .join("\n\n")
-      .substring(0, MAX_NARRATIVE_INPUT_CHARS); 
-    
-    logger.debug(`[ConsolidationAgent] Combined chunk text length for narrative generation: ${chunksText.length} chars`);
-    
-    // Use the centralized prompt from the config file
-    const prompt = aiConfig.episodeNarrativePrompt.replace('{CONTENT}', chunksText);
-    
-    logger.debug('[ConsolidationAgent] Sending prompt for episode narrative generation');
-    
-    const responseText = await aiService.getCompletion(prompt);
-    
-    let title = 'Untitled Episode';
-    let narrative = 'No description available.';
-    
-    if (responseText) {
-      // Extract title
-      const titleMatch = responseText.match(/Title:\s*(.+?)(?:\n|$)/);
-      if (titleMatch && titleMatch[1]) {
-        title = titleMatch[1].trim();
-      }
-      
-      // Extract summary/narrative
-      const summaryMatch = responseText.match(/Summary:\s*([\s\S]+)$/);
-      if (summaryMatch && summaryMatch[1]) {
-        narrative = summaryMatch[1].trim();
-      }
-    }
-    
-    return { title, narrative };
-  } catch (error) {
-    logger.error('[ConsolidationAgent] Error generating episode narrative:', { error });
-    return { 
-      title: 'Untitled Episode', 
-      narrative: 'This episode was automatically generated from related content.'
-    };
-  }
-}
-
-/**
- * Store an episode in Weaviate for retrieval
- * @param {Object} episode - The episode to store
- */
-async function storeEpisodeInWeaviate(episode) {
-  const client = weaviateClientUtil.getClient();
-  if (!client) {
-    logger.warn('[ConsolidationAgent] Weaviate client not available, skipping episode import');
-    return;
-  }
-  
-  try {
-    logger.debug(`[ConsolidationAgent] Attempting to store episode ${episode.id} in Weaviate with title: ${episode.title}`);
-    
-    // Generate UUID for Weaviate
-    const weaviateUuid = uuidv4(); 
-    logger.debug(`[ConsolidationAgent] Using Weaviate ID ${weaviateUuid} for DB Episode ${episode.id}`);
-    
-    // Expand vector to 1536 dimensions to match existing episode vectors
-    const targetDimension = aiConfig.embeddingDimension || 1536;
-    let vectorToStore = episode.centroidVec;
-    
-    if (vectorToStore.length !== targetDimension) {
-      logger.info(`[ConsolidationAgent] Expanding episode centroid vector from ${vectorToStore.length} to ${targetDimension} dimensions`);
-      const { expandVector } = require('./memoryManager.service');
-      vectorToStore = await expandVector(vectorToStore, targetDimension);
-    }
-    
-    // Store the episode in Weaviate
-    await client.data
-      .creator()
-      .withClassName('EpisodeEmbedding')
-      .withId(weaviateUuid)
-      .withProperties({
-        episodeDbId: episode.id,
-        title: episode.title || 'Untitled Episode',
-        userId: episode.userId
-      })
-      .withVector(vectorToStore)
-      .do();
-    
-    logger.info(`[ConsolidationAgent] Successfully stored episode ${episode.id} in Weaviate with ID ${weaviateUuid}`);
-    
-    // Update the Postgres episode record with centroidDim
-    await prisma.episode.update({
-      where: { id: episode.id },
-      data: { 
-        centroidDim: targetDimension,
-        centroidVec: vectorToStore // Store the expanded vector in the database as well
-      }
-    });
-    
-    return weaviateUuid;
-  } catch (error) {
-    logger.error(`[ConsolidationAgent] Error storing episode ${episode.id} in Weaviate: ${error.message}`, { error });
-    throw error;
-  }
 }
 
 /**

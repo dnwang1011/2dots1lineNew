@@ -8,12 +8,12 @@ const { v4: uuidv4 } = require('uuid');
 process.env.NODE_ENV = 'test'; // Ensure test environment
 
 const app = require('../../src/index'); // Assuming src/index.js exports the app or starts the server
-const { prisma, disconnectPrisma } = require('../../src/db/prisma');
+const { prisma, disconnectPrisma } = require('../../../src/db/prisma');
 const setupTestDb = require('../../scripts/setup-test-db'); // Helper to setup db
 
 // --- Mock AI Provider ---
 // We still need to mock the AI provider to avoid real calls
-const aiService = require('../../src/services/ai.service');
+const aiService = require('../../../src/services/ai.service');
 const MockAIProvider = require('../mocks/MockAIProvider');
 
 // --- Test Data ---

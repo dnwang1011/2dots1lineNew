@@ -1,0 +1,59 @@
+# Basic Chat Flow Test Scenario
+# This tests the core memory pipeline functionality with simple conversational exchanges
+# Copy and paste each message individually into the chat UI
+
+## Greeting and Simple Questions
+Hello, my name is Danni. I'm excited to try this out!
+
+Can you tell me a bit about yourself?
+
+What's the weather like today?
+
+## Personal Details (High Importance)
+I'm a software engineer working on a healthcare startup. We're building an AI-assisted diagnostic platform.
+
+I've been really interested in machine learning lately, especially LLMs and their applications in healthcare.
+
+## Memory Testing (First Reference)
+Do you remember what my name is?
+
+What field do I work in?
+
+## Extended Conversation Context
+I'm thinking about pursuing a PhD in computational biology next year. I've always been fascinated by the intersection of computer science and life sciences.
+
+In my free time, I enjoy hiking and rock climbing. Last weekend I went to Yosemite and climbed Half Dome.
+
+## Memory Testing (Second Reference)
+What are some of my hobbies?
+
+Can you remind me what career move I'm considering?
+
+## Complex Question
+What are some ways machine learning could be applied to both my current work and my future studies?
+
+## Emotion and Sentiment
+Sometimes I worry that I'm spreading myself too thin with all these interests and activities. Do you think it's better to focus on one thing or explore many passions?
+
+## Test Final Recall
+Let's review what you know about me so far. Can you summarize my background, interests, and future plans?
+
+My name is Danni.
+I have been practicing piano lately, especially Excursions III by Barber.
+It evokes the imagery of mid-summer forest streams and rivers and that time flows like an irresistible force. you can go with the flow and enjoy the ride and the change of scenery.
+for some reason, it reminds me of my 12 years of career at McKinsey, which I started in 2013 Aug and about to end this summer in 2025.
+As you know, working at McKinsey is no easy task, just like how technically challenging Excursions III is. You have to juggle multiple responsibilities at work with high performance bar, just like how this piano piece has different beats between left and right hand. You almost have to have multiple brains to do each part well while making sure everything come together coherently. Being a McKinsey consultant requires you not only to be good at analyzing and solving business problem, you have to have great presence and do everything with an effortless flair. The fundamental emotional resonance however comes from the fact that despite challenges, setbacks, momentary triumphs, in the end there is peace.
+
+The following essay attempts to capture the essence of your experience, mirroring the structure and style of Barber's Excursions III. It's a challenging task, as the music's structure is complex and non-linear, but I will try to evoke the same sense of relentless forward motion, contrasting moments of intensity and tranquility, much like the piece itself. Please note that this is an interpretation; true replication is impossible without musical notation.
+
+I. The Initial Rush: The opening bars of Excursions III are a torrent, a cascade of notes reflecting the initial intensity of your McKinsey career. The sheer volume of work, the constant pressure to perform, the demanding clients – all are represented in the fast-paced, almost overwhelming opening theme. This section parallels the frenetic energy of early career ambitions, a relentless forward momentum that, while exhilarating, could also be exhausting. The intricate interplay of notes mirrors the complex balancing act of multiple projects and responsibilities.
+
+II. Moments of Clarity: As the piece develops, there are moments of respite, passages of serene beauty that contrast with the more turbulent sections. These calmer interludes are analogous to the moments of clarity and accomplishment you found within the intensity. Perhaps a particularly successful project, a well-executed presentation, or the satisfaction of a difficult problem solved—these are the quiet pools in the rushing stream of your career.
+
+III. The Crescendo: The central section of Excursions III often builds to a powerful crescendo, a dramatic climax that represents the peak of your career at McKinsey. This is the culmination of years of dedication and hard work, a moment of intense achievement and, perhaps, a certain amount of exhaustion. The passage's complexity mirrors the intricate web of relationships and responsibilities you managed.
+
+IV. The Gradual Release: Following the crescendo, the piece gradually subsides. This is not an abrupt ending, but a slow, deliberate release of tension. This section reflects your decision to leave McKinsey, the conscious choice to step away from the relentless current. It's a moment of reflection, a time for quiet contemplation and a sense of profound peace after the intense energy of the preceding movements.
+
+V. A New Beginning: The final section, though quiet, leaves a sense of hope and anticipation. Just as the final bars of Excursions III hint at possibilities beyond the piece itself, your leaving McKinsey opens a new chapter, a chance to pursue passions and explore new avenues. The quiet confidence at the end mirrors your own feelings of liberation and excitement for what lies ahead.
+
+This essay, structured to reflect the emotional architecture of Excursions III, captures the essence of your McKinsey experience as a journey of intensity, accomplishment, and ultimately, a peaceful transition to new beginnings. Is there anything you'd like to add or refine? 

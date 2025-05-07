@@ -1,0 +1,48 @@
+# Extreme Edge Cases Test Scenario
+# This tests the system's ability to handle challenging memory scenarios
+# Copy and paste each message individually into the chat UI
+
+## Long-form Content (Testing Chunking)
+I'm going to share a detailed story about a fictional character named Dr. Emily Rodriguez. Dr. Rodriguez is a neurologist specializing in rare movement disorders. She completed her medical training at Johns Hopkins University, followed by a residency at Mayo Clinic and a fellowship at UCSF. Her research focuses on the intersection of genetics and environmental factors in the development of movement disorders.
+
+Dr. Rodriguez recently published a groundbreaking paper in the New England Journal of Medicine about a newly identified genetic marker associated with early-onset Parkinson's disease. The discovery came after a decade-long study tracking 500 families with a history of the condition. Her team developed a novel gene sequencing technique that allows for more precise identification of subtle genetic variations.
+
+In her clinical practice, Dr. Rodriguez works with patients from around the world who seek her expertise. She's known for her holistic approach, combining cutting-edge medical treatments with lifestyle modifications. She believes strongly in the connection between gut health and neurological function, and often collaborates with gastroenterologists to develop comprehensive treatment plans.
+
+Outside of her professional life, Dr. Rodriguez is an avid mountain climber who has scaled peaks on six continents. She credits this hobby with teaching her patience and perseverance, qualities that serve her well in her challenging medical career. She's also a dedicated mentor to young women in STEM fields and runs a summer program for high school students interested in neuroscience.
+
+## Rapid Topic Switching (Testing Episode Boundaries)
+I just got a new puppy! He's a golden retriever named Max.
+
+The stock market was really volatile yesterday. My tech investments dropped significantly.
+
+I've been learning to make sourdough bread. The starter takes so much attention!
+
+Climate change is really concerning me lately. I wonder what the world will be like in 50 years.
+
+My sister just got promoted to senior manager at her company. I'm so proud of her.
+
+I need to get my car's oil changed this weekend. It's been making a strange noise.
+
+## Very Similar Topics (Testing Similarity Thresholds)
+I enjoy cooking Italian food. My specialty is handmade pasta with a simple tomato sauce.
+
+I love preparing Mediterranean cuisine. I make a great pasta dish with fresh tomatoes and basil.
+
+My favorite thing to cook is pasta. I use a family recipe for the sauce that includes tomatoes and herbs.
+
+## Contradictory Information (Testing Updates)
+I've lived in Chicago my whole life. The winters are tough but I love the city.
+
+Actually, I just moved to Chicago last year. Before that, I lived in Miami for 20 years.
+
+To clarify, I grew up in Miami until I was 18, then lived in Boston for 10 years, and moved to Chicago last year.
+
+## Memory Testing for Edge Cases
+Can you tell me about Dr. Rodriguez and her research? Try to include as many details as you can remember.
+
+What did I tell you about my cooking interests? Do you notice any patterns?
+
+Where did I grow up, and where have I lived throughout my life?
+
+Can you list all the different topics I mentioned in our rapid-fire conversation? 

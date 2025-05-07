@@ -1,0 +1,41 @@
+# Thought Formation Test Scenario
+# This tests the system's ability to generate higher-level thoughts from multiple related episodes
+# Copy and paste each message individually into the chat UI
+
+## Episode 1: Work-Life Balance Struggles
+I've been really struggling with work-life balance lately. I'm working 60+ hours a week and barely have time for anything else.
+
+My health is starting to suffer too. I'm not sleeping well, and I've had to cancel my gym membership because I never had time to go.
+
+I know I should set better boundaries at work, but I'm afraid of being seen as not committed enough.
+
+## Episode 2: Career Development
+I've been at my current company for 5 years now. I'm proud of what I've accomplished, but I feel like I'm not growing as much anymore.
+
+There's a promotion opportunity coming up, but I'm not sure if I want it. It would mean even more responsibility and probably longer hours.
+
+Sometimes I wonder if I should look for opportunities elsewhere, but I'm comfortable with my team and the company culture.
+
+## Episode 3: Personal Values Reflection
+I've been doing some reflection lately about what really matters to me. When I was younger, career success was everything.
+
+Now I'm starting to value personal time, health, and relationships more. I want to feel like I'm living a meaningful life, not just a productive one.
+
+My parents always emphasized hard work and achievement, so there's some guilt when I think about prioritizing other things.
+
+## Episode 4: Future Planning
+In five years, I'd like to be in a position where I have more control over my schedule.
+
+Maybe that means a different role, or even starting my own business. I have some savings, but not enough to completely start over.
+
+I also want to have time for personal projects and maybe even start a family. That feels impossible with my current lifestyle.
+
+## Memory Test for Thought Formation
+Looking back at our conversations about my work and life goals, do you notice any patterns or themes?
+
+Do you think there's a conflict between my career ambitions and my personal values?
+
+What advice would you give me based on everything we've discussed about my situation?
+
+## Direct Thought Prompt
+Based on our conversations about my work struggles, career path, personal values, and future plans, can you identify any deeper insights or thought-level patterns that might help me make better decisions? 

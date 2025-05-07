@@ -91,6 +91,24 @@ This document outlines the coding standards, architectural principles, and best 
     *   Include relevant context in logs (e.g., `userId`, `sessionId`, `requestId`, entity IDs) in a structured format (JSON).
     *   Do NOT log sensitive information (passwords, full API keys, excessive PII) unless absolutely necessary and properly secured/masked.
 
+## VIII. File & Resource Naming Conventions
+
+16. **Consistent Naming Patterns:**
+    * Use lowercase for all filenames (HTML, CSS, JS, images) to ensure cross-platform compatibility and prevent case-sensitivity issues.
+    * Use kebab-case for multi-word filenames (e.g., `user-profile.html`, `api-client.js`).
+    * File extensions MUST accurately reflect the file content type (`.js`, `.html`, `.css`).
+    * Server-side code MUST reference files using the exact same case and naming pattern as the actual files on disk.
+    * NEVER rely on case-insensitive filesystems or symbolic links to resolve inconsistencies between code references and actual filenames.
+
+17. **Resource Organization:**
+    * Frontend assets should be organized in semantic directories:
+      * `/css` - Style sheets
+      * `/js` - JavaScript files
+      * `/images` - Image assets
+      * `/fonts` - Font files
+    * HTML templates should be in the root of the `/public` directory.
+    * Each HTML file should have a clear, purpose-indicating name (e.g., `index.html`, `login.html`, `profile.html`).
+
 ## Vector Database and Memory System
 
 ### Vector Dimension Consistency

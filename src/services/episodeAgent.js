@@ -9,24 +9,30 @@ const { PrismaClient } = require('@prisma/client');
 // const prisma = new PrismaClient();
 const { prisma } = require('../db/prisma'); // Use the singleton instance
 const logger = require('../utils/logger').childLogger('EpisodeAgent');
-const weaviateClientUtil = require('../utils/weaviateClient');
+const weaviateClientUtil = require('../utils/weaviateClient'); // No longer needed directly
+const { storeObjectInWeaviate } = require('../utils/weaviateHelper'); // USE SHARED HELPER
 const cosine = require('compute-cosine-similarity');
 const { Queue } = require('bullmq');
+const { generateTitleAndNarrative } = require('../utils/aiHelper'); // Assuming a helper for this
 // const config = require('../config'); // Removed unused config import
 const redisConfig = require('../utils/redisConfig');
-const { expandVector } = require('../services/memoryManager.service'); // Make sure expandVector is imported
+const { expandVector } = require('../utils/vectorUtils'); // IMPORT FROM NEW UTILITY
 const aiConfig = require('../../config/ai.config'); // Import aiConfig for target dimension
+const episodicConfig = require('../../config/episodic.config'); // Import episodic config
+const queueConfig = require('../../config/queue.config'); // Import queue config
+const memoryConfig = require('../../config/memory.config'); // Import memory config for importance thresholds
 
-// Configuration parameters
-const EPISODE_TIME_WINDOW = 7 * 24 * 60 * 60 * 1000; // 1 week in milliseconds
-const SIMILARITY_THRESHOLD = 0.65; // Minimum cosine similarity to attach chunk to episode (Increased from 0.7)
-const ORPHAN_QUEUE_NAME = 'orphan-chunks';
-const MAX_CANDIDATE_EPISODES = 5; // Limit how many episodes we check similarity against
+// Import configuration parameters from centralized config files
+const EPISODE_TIME_WINDOW = episodicConfig.episodeTimeWindowMs;
+const SIMILARITY_THRESHOLD = episodicConfig.similarityThreshold; // Primary threshold for a good single match
+const MULTIPLE_ATTACHMENT_SIMILARITY_THRESHOLD = episodicConfig.multipleAttachmentSimilarityThreshold;
+const NEW_EPISODE_SEED_THRESHOLD = episodicConfig.newEpisodeSeedThreshold;
+const ORPHAN_QUEUE_NAME = queueConfig.queues.orphanChunks;
+const MAX_CANDIDATE_EPISODES = episodicConfig.maxCandidateEpisodes;
 
 // Initialize the queue for orphan chunks
 let orphanQueue = null;
 try {
-  // Get shared Redis config with validation
   const redisConnection = redisConfig.getRedisConfig();
   if (!redisConnection) {
     throw new Error('Redis configuration missing or invalid. Queue initialization failed.');
@@ -41,7 +47,7 @@ try {
 }
 
 /**
- * Process a new chunk: Try to link it to an existing episode or add it to the orphan queue
+ * Process a new chunk: Try to link it to existing episodes, seed a new episode, or add to orphan queue.
  * @param {string} chunkId - The ID of the ChunkEmbedding record
  * @param {string} userId - The ID of the user
  */
@@ -53,15 +59,14 @@ async function processChunk(chunkId, userId) {
     const chunk = await prisma.chunkEmbedding.findUnique({ where: { id: chunkId } });
     if (!chunk) {
       logger.warn(`[EpisodeAgent] Chunk ${chunkId} not found in DB. Skipping.`);
-      return; 
+      return { success: false, reason: 'Chunk not found' }; 
     }
     
     // 2. Get the chunk vector from Weaviate
     let chunkVector = await getChunkVector(chunkId);
     if (!chunkVector) {
       logger.error(`[EpisodeAgent] Failed to get vector for chunk ${chunkId}. Cannot process.`);
-      // Optionally add to a retry queue or mark as failed
-      return; 
+      return { success: false, reason: 'Failed to get chunk vector' }; 
     }
 
     // Define the target dimension (e.g., from config)
@@ -72,8 +77,8 @@ async function processChunk(chunkId, userId) {
       logger.info(`[EpisodeAgent] Expanding chunk vector ${chunkId} from ${chunkVector.length} to ${targetDimension}`);
       chunkVector = await expandVector(chunkVector, targetDimension);
       if (!chunkVector || chunkVector.length !== targetDimension) {
-         logger.error(`[EpisodeAgent] Failed to expand chunk vector ${chunkId} to target dimension ${targetDimension}. Aborting processing.`);
-         return;
+         logger.error(`[EpisodeAgent] Failed to expand chunk vector ${chunkId}. Aborting.`);
+         return { success: false, reason: 'Failed to expand chunk vector' };
       }
     }
     
@@ -81,18 +86,19 @@ async function processChunk(chunkId, userId) {
     // Fetch episodes including their centroid and dimension
     const candidateEpisodes = await prisma.episode.findMany({
       where: { userId: userId },
-      // Select centroidVec and centroidDim along with id
-      select: { id: true, centroidVec: true, centroidDim: true }
+      select: { id: true, centroidVec: true, centroidDim: true },
+      orderBy: { createdAt: 'desc' }, // Process more recent episodes first
+      take: MAX_CANDIDATE_EPISODES
     });
     logger.info(`[EpisodeAgent] Found ${candidateEpisodes.length} candidate episodes for chunk ${chunkId}`);
 
-    let bestMatch = null;
-    let bestSimilarity = -1;
+    let bestOverallSimilarity = -1;
+    let bestOverallMatchEpisode = null;
+    const potentialAttachments = [];
 
-    // 4. Calculate similarity using the fetched chunkVector
     for (const episode of candidateEpisodes) {
       if (!episode.centroidVec || episode.centroidVec.length === 0) {
-        logger.warn(`[EpisodeAgent] Episode ${episode.id} has invalid centroid vector. Skipping.`);
+        logger.warn(`[EpisodeAgent] Episode ${episode.id} has invalid centroid. Skipping.`);
         continue;
       }
       
@@ -102,90 +108,153 @@ async function processChunk(chunkId, userId) {
         logger.info(`[EpisodeAgent] Expanding episode vector ${episode.id} from ${episodeVector.length} to ${targetDimension}`);
         episodeVector = await expandVector(episodeVector, targetDimension);
         if (!episodeVector || episodeVector.length !== targetDimension) {
-           logger.warn(`[EpisodeAgent] Failed to expand episode vector ${episode.id} to target dimension ${targetDimension}. Skipping episode.`);
-           continue; // Skip this episode if expansion failed
+           logger.warn(`[EpisodeAgent] Failed to expand episode vector ${episode.id}. Skipping.`);
+           continue;
         }
       }
 
       const similarity = cosine(chunkVector, episodeVector);
-      logger.debug(`[EpisodeAgent] Similarity between chunk ${chunkId} and episode ${episode.id}: ${similarity.toFixed(4)}`);
+      logger.debug(`[EpisodeAgent] Similarity: chunk ${chunkId} to episode ${episode.id} = ${similarity.toFixed(4)}`);
 
-      if (similarity > bestSimilarity) {
-        bestSimilarity = similarity;
-        bestMatch = { ...episode, centroidVec: episodeVector }; // Store the potentially expanded vector
+      if (similarity > MULTIPLE_ATTACHMENT_SIMILARITY_THRESHOLD) {
+        potentialAttachments.push({ episodeId: episode.id, similarity, episodeVector });
+      }
+      if (similarity > bestOverallSimilarity) {
+        bestOverallSimilarity = similarity;
+        bestOverallMatchEpisode = { ...episode, centroidVec: episodeVector };
       }
     }
 
-    // 5. If a good match is found, attach the chunk to it
-    if (bestMatch && bestSimilarity >= SIMILARITY_THRESHOLD) {
-      logger.info(`[EpisodeAgent] Attaching chunk ${chunkId} to episode ${bestMatch.id} (similarity: ${bestSimilarity.toFixed(4)})`)
-      
-      // Create association in the database
-      await prisma.chunkEpisode.create({
-        data: {
-          chunkId: chunkId,
-          episodeId: bestMatch.id
-        }
-      });
-
-      // Update the episode's centroid to include the new chunk (averaging approach)
-      logger.debug(`[EpisodeAgent] Updating episode centroid with new chunk vector`);
-      
-      // Both vectors should now be at the targetDimension
-      const existingCentroid = bestMatch.centroidVec; 
-
-      // Calculate the new centroid as a weighted average
-      // Give more weight to the existing centroid because it represents multiple chunks already
-      const chunkCount = await prisma.chunkEpisode.count({
-        where: { episodeId: bestMatch.id }
-      });
-      
-      const existingWeight = chunkCount -1; // Exclude the chunk we just added
-      const newWeight = 1;
-      const totalWeight = Math.max(1, existingWeight + newWeight); // Avoid division by zero
-      
-      // Calculate weighted average
-      const newCentroid = existingCentroid.map((val, i) => 
-        ((val * existingWeight) + (chunkVector[i] * newWeight)) / totalWeight
-      );
-      
-      // Update the episode with the new centroid
-      await prisma.episode.update({
-        where: { id: bestMatch.id },
-        data: { 
-          centroidVec: newCentroid,
-          centroidDim: newCentroid.length // Should be targetDimension
-        }
-      });
-      
-      logger.info(`[EpisodeAgent] Updated centroid for episode ${bestMatch.id}, now including ${chunkCount} chunks`);
-      return { 
-        success: true, 
-        action: 'attached', 
-        episodeId: bestMatch.id, 
-        similarity: bestSimilarity 
+    // Attach to multiple episodes if there are any potential attachments
+    const attachedEpisodeIds = [];
+    if (potentialAttachments.length > 0) {
+      logger.info(`[EpisodeAgent] Chunk ${chunkId} has ${potentialAttachments.length} potential episode attachments meeting MULTIPLE_ATTACHMENT_SIMILARITY_THRESHOLD (${MULTIPLE_ATTACHMENT_SIMILARITY_THRESHOLD}).`);
+      for (const attachment of potentialAttachments) {
+        await linkChunkToEpisode(chunkId, attachment.episodeId, chunkVector, attachment.episodeVector, userId);
+        attachedEpisodeIds.push(attachment.episodeId);
+      }
+      return {
+        success: true,
+        action: 'attached_multiple',
+        episodeIds: attachedEpisodeIds,
+        bestSimilarity: bestOverallSimilarity
       };
-    } 
-    // 6. Otherwise, add the chunk to the orphan queue for later consolidation
-    else {
-      logger.info(`[EpisodeAgent] No suitable episode found for chunk ${chunkId}. Best similarity: ${bestSimilarity.toFixed(4)}. Adding to orphan queue.`);
-      
-      // Add to orphan queue with vector (ensure it's the target dimension vector)
-      await addToOrphanQueue({
-        id: chunkId,
-        userId: userId,
-        vector: chunkVector, // Use the potentially expanded chunkVector
-        importance: chunk.importanceScore || 0.5,
-        createdAt: chunk.createdAt || new Date(),
-      });
     }
     
-    logger.info(`[EpisodeAgent] Successfully processed chunk ${chunkId}`);
+    // If not attached to any episode yet, check if it's a strong primary match for the most similar one
+    if (bestOverallMatchEpisode && bestOverallSimilarity >= SIMILARITY_THRESHOLD) {
+        logger.info(`[EpisodeAgent] Attaching chunk ${chunkId} as primary to episode ${bestOverallMatchEpisode.id} (similarity: ${bestOverallSimilarity.toFixed(4)})`);
+        await linkChunkToEpisode(chunkId, bestOverallMatchEpisode.id, chunkVector, bestOverallMatchEpisode.centroidVec, userId);
+        return {
+            success: true,
+            action: 'attached_primary',
+            episodeId: bestOverallMatchEpisode.id,
+            similarity: bestOverallSimilarity
+        };
+    }
+
+    // If not attached and not a strong primary match, consider seeding a new episode
+    const chunkImportance = chunk.importanceScore || memoryConfig.defaultRawDataImportance;
+    if (bestOverallSimilarity < NEW_EPISODE_SEED_THRESHOLD && chunkImportance >= memoryConfig.defaultImportanceThreshold) {
+      logger.info(`[EpisodeAgent] Chunk ${chunkId} (importance: ${chunkImportance.toFixed(2)}) with best similarity ${bestOverallSimilarity.toFixed(4)} < NEW_EPISODE_SEED_THRESHOLD (${NEW_EPISODE_SEED_THRESHOLD}). Seeding new episode.`);
+      const { title, narrative } = await generateTitleAndNarrative([chunk.text], 'New episode seeded by user query.');
+      
+      const newEpisode = await prisma.episode.create({
+        data: {
+          title: title || `New Episode from Chunk ${chunkId.substring(0,8)}`,
+          narrative: narrative || chunk.text.substring(0, 200),
+          centroidVec: chunkVector, // Initial centroid is the chunk's vector
+          centroidDim: chunkVector.length,
+          userId: userId,
+          createdAt: new Date(),
+        }
+      });
+      logger.info(`[EpisodeAgent] Created new episode ${newEpisode.id} for chunk ${chunkId}`);
+      await linkChunkToEpisode(chunkId, newEpisode.id, chunkVector, chunkVector, userId);
+      
+      // Store newEpisode in Weaviate using the shared helper
+      const weaviateProperties = {
+        episodeDbId: newEpisode.id,
+        title: newEpisode.title,
+        narrative: newEpisode.narrative,
+        userId: newEpisode.userId,
+        createdAt: newEpisode.createdAt.toISOString(),
+      };
+      const weaviateId = await storeObjectInWeaviate('EpisodeEmbedding', weaviateProperties, newEpisode.centroidVec);
+      if (weaviateId) {
+        logger.info(`[EpisodeAgent] Stored newly seeded episode ${newEpisode.id} in Weaviate (Weaviate ID: ${weaviateId})`);
+      } else {
+        logger.warn(`[EpisodeAgent] Failed to store newly seeded episode ${newEpisode.id} in Weaviate.`);
+        // Consider if this should impact the success of the operation or queue for retry
+      }
+
+      return {
+        success: true,
+        action: 'seeded_new_episode',
+        episodeId: newEpisode.id
+      };
+    }
+    
+    logger.info(`[EpisodeAgent] No suitable episode found for chunk ${chunkId}. Best similarity: ${bestOverallSimilarity.toFixed(4)}. Adding to orphan queue.`);
+    await addToOrphanQueue({
+      id: chunkId,
+      userId: userId,
+      vector: chunkVector,
+      importance: chunkImportance,
+      createdAt: chunk.createdAt || new Date(),
+    });
+    return {
+      success: true,
+      action: 'orphaned',
+      bestSimilarity: bestOverallSimilarity
+    };
+
   } catch (error) {
     logger.error(`[EpisodeAgent] Error processing chunk ${chunkId}:`, { error });
-    // Re-throw to BullMQ can retry if needed
-    throw error;
+    throw error; // Re-throw for BullMQ retry if configured
   }
+}
+
+/**
+ * Helper function to link a chunk to an episode and update the episode's centroid.
+ */
+async function linkChunkToEpisode(chunkId, episodeId, chunkVector, episodeCentroidVec, userId) {
+  await prisma.chunkEpisode.create({
+    data: {
+      chunkId: chunkId,
+      episodeId: episodeId
+    }
+  });
+
+  const chunkCountResult = await prisma.chunkEpisode.aggregate({
+    _count: { chunkId: true },
+    where: { episodeId: episodeId },
+  });
+  const chunkCount = chunkCountResult._count.chunkId;
+
+  logger.debug(`[EpisodeAgent] Updating episode centroid for ${episodeId} with new chunk ${chunkId}. Current chunk count: ${chunkCount}`);
+  
+  let newCentroid;
+  if (chunkCount === 1) { // This is the first chunk being added (or re-calculation with only this chunk)
+    newCentroid = chunkVector;
+  } else {
+    const existingWeight = chunkCount - 1;
+    const newWeight = 1;
+    const totalWeight = existingWeight + newWeight;
+    
+    newCentroid = episodeCentroidVec.map((val, i) => 
+      ((val * existingWeight) + (chunkVector[i] * newWeight)) / totalWeight
+    );
+  }
+  
+  await prisma.episode.update({
+    where: { id: episodeId },
+    data: { 
+      centroidVec: newCentroid,
+      centroidDim: newCentroid.length
+    }
+  });
+  logger.info(`[EpisodeAgent] Updated centroid for episode ${episodeId}, now including ${chunkCount} chunks`);
 }
 
 /**
@@ -200,15 +269,12 @@ async function getChunkVector(chunkId) {
     return null;
   }
   
-  // Retry configuration
   const maxRetries = 3;
-  const baseDelay = 2000; // 2 seconds
+  const baseDelay = 2000;
   
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       logger.info(`[EpisodeAgent] Retrieving vector for chunk ${chunkId} (attempt ${attempt}/${maxRetries})`);
-      
-      // Use GraphQL API to retrieve the vector
       const result = await client.graphql
         .get()
         .withClassName('ChunkEmbedding')
@@ -220,12 +286,10 @@ async function getChunkVector(chunkId) {
         })
         .do();
       
-      // Enhanced debugging - log the full response structure on first attempt
       if (attempt === 1) {
         logger.debug(`[EpisodeAgent] Weaviate response structure: ${JSON.stringify(result?.data || {})}`);
       }
       
-      // Check if we got any results
       const chunks = result?.data?.Get?.ChunkEmbedding || [];
       
       if (chunks.length > 0) {
@@ -233,69 +297,59 @@ async function getChunkVector(chunkId) {
           logger.info(`[EpisodeAgent] Successfully retrieved vector for chunk ${chunkId} on attempt ${attempt}`);
           return chunks[0]._additional.vector;
         } else {
-          logger.warn(`[EpisodeAgent] Found chunk ${chunkId} in Weaviate but vector is missing in response`);
+          logger.warn(`[EpisodeAgent] Found chunk ${chunkId} in Weaviate but vector is missing`);
         }
       } else {
         logger.warn(`[EpisodeAgent] No chunks found for chunkDbId ${chunkId} in Weaviate on attempt ${attempt}`);
       }
       
-      // If no vector found and we have more retries, wait and try again
       if (attempt < maxRetries) {
-        // Exponential backoff with jitter
         const delay = baseDelay * Math.pow(2, attempt - 1) * (0.5 + Math.random());
         logger.info(`[EpisodeAgent] Vector not found for chunk ${chunkId}. Waiting ${Math.round(delay)}ms before retry ${attempt + 1}/${maxRetries}`);
         await new Promise(resolve => setTimeout(resolve, delay));
       } else {
-        logger.error(`[EpisodeAgent] Vector not found for chunk ${chunkId} after ${maxRetries} attempts`);
+        logger.error(`[EpisodeAgent] Failed to retrieve vector for chunk ${chunkId} after ${maxRetries} attempts.`);
         return null;
       }
     } catch (error) {
-      // For other errors, if we have retries left, wait and try again
+      logger.error(`[EpisodeAgent] Error retrieving vector for chunk ${chunkId} (attempt ${attempt}):`, { error });
       if (attempt < maxRetries) {
         const delay = baseDelay * Math.pow(2, attempt - 1) * (0.5 + Math.random());
-        logger.error(`[EpisodeAgent] Error retrieving vector for chunk ${chunkId}: ${error.message}. Retrying in ${Math.round(delay)}ms...`);
         await new Promise(resolve => setTimeout(resolve, delay));
       } else {
-        logger.error(`[EpisodeAgent] Failed to retrieve vector for chunk ${chunkId} after ${maxRetries} attempts:`, { error });
         return null;
       }
     }
   }
-  
-  return null; // If we get here, all retries failed
+  return null;
 }
 
 /**
  * Adds a chunk to the orphan queue for later consolidation
  * @param {Object} chunk - The ChunkEmbedding to add to the queue
  */
-async function addToOrphanQueue(chunk) {
+async function addToOrphanQueue(chunkData) {
   if (!orphanQueue) {
-    logger.warn(`[EpisodeAgent] Orphan queue not available, skipping chunk ${chunk.id}`);
+    logger.error("[EpisodeAgent] Orphan chunk queue not initialized. Cannot add chunk.");
     return;
   }
-  
   try {
-    // Create a unique job name to prevent duplicates
-    const jobName = `orphan-chunk-${chunk.id}`;
-    
-    await orphanQueue.add(jobName, {
-      chunkId: chunk.id,
-      userId: chunk.userId,
-      vector: chunk.vector, // Pass the vector if we have it
-      importance: chunk.importance || 0.5,
-      createdAt: chunk.createdAt instanceof Date ? chunk.createdAt.toISOString() : chunk.createdAt,
-    }, {
-      removeOnComplete: true, // Keep queue clean
-      removeOnFail: 50,       // Keep failed jobs for inspection
-      attempts: 3,            // Retry failed jobs
-      backoff: { type: 'exponential', delay: 5000 }, // Exponential backoff
-      jobId: `chunk-${chunk.id}` // Use a stable jobId to prevent duplicates
+    // Ensure chunkData includes id, userId, vector, importance, createdAt
+    if (!chunkData.id || !chunkData.userId || !chunkData.vector || chunkData.importance === undefined || !chunkData.createdAt) {
+        logger.error("[EpisodeAgent] Invalid chunkData for orphan queue:", chunkData);
+        return;
+    }
+    await orphanQueue.add('process-orphan', chunkData, {
+      jobId: `orphan-${chunkData.id}`, // Ensure unique job ID
+      attempts: 3, // Retry up to 3 times
+      backoff: {
+        type: 'exponential',
+        delay: 5000, // 5 seconds initial delay
+      }
     });
-    
-    logger.info(`[EpisodeAgent] Added chunk ${chunk.id} to orphan queue for later processing`);
+    logger.info(`[EpisodeAgent] Added chunk ${chunkData.id} to orphan queue for later processing`);
   } catch (error) {
-    logger.error(`[EpisodeAgent] Error adding chunk ${chunk.id} to orphan queue:`, { error });
+    logger.error(`[EpisodeAgent] Failed to add chunk ${chunkData.id} to orphan queue:`, { error });
   }
 }
 

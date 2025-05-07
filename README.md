@@ -19,7 +19,6 @@ An AI-powered chat application with memory management and asynchronous file proc
 - [Development Workflow](#development-workflow)
 - [Testing](#testing)
 - [Documentation](#documentation)
-- [Vercel Deployment](#vercel-deployment)
 - [Troubleshooting](#troubleshooting)
 
 ## Introduction
@@ -260,8 +259,10 @@ GOOGLE_AI_API_KEY=your_gemini_api_key
 
 The 2dots1line application includes a sophisticated memory system that allows the Dot chatbot to remember past conversations and experiences. The memory system uses a two-tier approach:
 
-1. **Database (PostgreSQL/Prisma)**: Stores raw data, chunks, episodes, and their relationships
-2. **Vector Database (Weaviate)**: Stores vector embeddings for semantic search and retrieval
+1. **Database (PostgreSQL/Prisma)**: Stores raw data, chunks, episodes, and their relationships.
+2. **Vector Database (Weaviate)**: Stores vector embeddings for semantic search and retrieval.
+
+The system features dynamic episode creation, where new conversational themes can seed new episodes. Chunks of conversation can also be linked to multiple relevant episodes, allowing for a richer, more interconnected memory graph. Orphaned chunks are periodically reviewed and clustered to form new episodes or merge with existing ones.
 
 For detailed information about the memory system, refer to [MEMORY_SYSTEM.md](docs/architecture/MEMORY_SYSTEM.md).
 
@@ -348,59 +349,6 @@ All documentation is maintained in the `docs` directory:
 - [Memory System](docs/architecture/MEMORY_SYSTEM.md) - Memory system architecture
 - [Coding Standards](docs/architecture/CODING_STANDARDS.md) - Coding standards and best practices
 - [Migration Roadmap](docs/migrations/MIGRATION_ROADMAP.md) - Plan for code migrations
-
-## Vercel Deployment
-
-### Preparing for Deployment
-
-1. **Set up a production database**
-   - Create a PostgreSQL database (Vercel Postgres or external provider)
-   - Update the `DATABASE_URL` in your Vercel environment variables
-
-2. **Set up Redis**
-   - Use a managed Redis service (Redis Labs, Upstash, etc.)
-   - Note the connection details for environment variables
-
-3. **Configure Weaviate**
-   - Use Weaviate Cloud Services or self-host
-   - Note the connection details for environment variables
-
-### Deployment Steps
-
-1. **Install Vercel CLI**
-   ```bash
-   npm install -g vercel
-   ```
-
-2. **Login to Vercel**
-   ```bash
-   vercel login
-   ```
-
-3. **Configure your project**
-   ```bash
-   vercel
-   ```
-   Follow the prompts to link your local project to a Vercel project.
-
-4. **Set environment variables**
-   ```bash
-   vercel env add DATABASE_URL
-   vercel env add JWT_SECRET
-   vercel env add REDIS_HOST
-   vercel env add REDIS_PORT
-   vercel env add REDIS_PASSWORD
-   vercel env add WEAVIATE_HOST
-   vercel env add WEAVIATE_API_KEY
-   vercel env add GOOGLE_AI_API_KEY
-   ```
-
-5. **Deploy to Production**
-   ```bash
-   vercel --prod
-   ```
-
-See [STARTUP_INSTRUCTIONS.md](./docs/STARTUP_INSTRUCTIONS.md) for more details on deployment and operation.
 
 ## Troubleshooting
 

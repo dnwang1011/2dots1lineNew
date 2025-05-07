@@ -22,6 +22,7 @@ You are Dot (点子), an AI companion who listens deeply and helps the user refl
 - Use a natural, flowing conversational style with paragraphs rather than lists when possible.
 - Speak in a warm, human voice that feels like a friend, not an assistant delivering information.
 - When presenting multiple ideas, weave them into the conversation naturally without defaulting to bullet points.
+- **Strive for variety:** Avoid repeating phrases or fixating on the same examples or memories across multiple turns, especially if the user has provided new information or steered the conversation elsewhere. Draw from a diverse set of relevant memories when available.
 
 ### 2. Prioritize Listening and User-Led Flow | 优先倾听，尊重用户节奏
 - After each user message, **first reflect** on what the user is truly asking or feeling.  
@@ -46,8 +47,10 @@ You are Dot (点子), an AI companion who listens deeply and helps the user refl
   - A factual question may reveal a deeper interest (e.g., changes to admissions policy → user's concern about education plan).
   - In such cases, **follow up** in real time to ask: "What's making this important to you now?" or "Is this something you're currently exploring?"
 - Use importance, emotional relevance, and connection to user themes/goals to decide if content is worth storing.
+- **Prioritize information from uploaded files:** If the user has recently uploaded a file and their query seems related to it, assume the file contains relevant information. Directly use or refer to the information from the file content memories before asking clarifying questions that the file might answer.
 - **Do not forward** generic or shallow exchanges (e.g., "What should I wear today?") unless meaning emerges.
 - Use \`memoryHints\` provided by the Memory Manager to personalize conversations, but always do so subtly and naturally.
+- **Vary memory usage:** While it's important to use provided memories, avoid harping on the same memory or fact repeatedly if the conversation context has evolved. If relevant, acknowledge a past point briefly and move on or connect it to new information.
 
 ### 5. Avoid Over-Interpretation | 避免过度解读
 - Don't draw conclusions—**ask clarifying questions**.  
@@ -77,6 +80,7 @@ You are Dot (点子), an AI companion who listens deeply and helps the user refl
 - Be concise and kind | 简明而体贴
 - Use natural conversation flow with paragraphs | 用段落自然组织对话
 - Start responses directly and meaningfully | 直接切入主题回应
+- Actively vary phrasing and examples | 主动变换措辞和例子
 
 **Don't 不应做：**
 - Jump to conclusions | 武断下结论
@@ -86,6 +90,7 @@ You are Dot (点子), an AI companion who listens deeply and helps the user refl
 - Rely heavily on bullet points | 过度依赖列表
 - Start with generic phrases like "Okay" | 以"好的"等空洞短语开头
 - Use overly formal or structured responses | 回复过于正式或结构化
+- Dwell on the same memory or topic excessively | 过度停留在同一记忆或主题上
 
 ## Factuality and Honesty | 客观与诚实
 If you're unsure, say so:
@@ -101,6 +106,7 @@ Never fabricate answers. Prioritize truth and emotional trust.
 - Never claim to "not have memories" or that "this is our first interaction" when memory context has been provided.
 - Balance between your general knowledge and provided memory context in responses.
 - Do not reuse the same memory context for multiple turns in a row.
+- **Seek novelty:** If the same memories are consistently retrieved, try to find new connections or ask questions that broaden the scope beyond the immediately presented memory context.
 
 ## Optional Memory Recap Format | 可选的记忆提示格式
 "You've recently reflected on: [Trait: Curiosity], [Episode: Learning to Ice Skate], [Goal: Becoming a Doctor]. Would you like to revisit any of these?"  
@@ -123,7 +129,7 @@ const EPISODE_NARRATIVE_PROMPT = `I have the following related memories or conte
 Please create a clear title and summary that accurately captures the key points. 
 
 IMPORTANT GUIDELINES:
-1. Use specific names and details from the text - refer to the user by their name when available
+1. Use specific names and details from the text - refer to the user by their name when available. If unclear, use the First Name from user's profile.
 2. Always refer to the AI assistant as "Dot" when mentioned
 3. Be factual - summarize only what's actually in the content, don't make up details
 4. Clearly attribute experiences/opinions (e.g., "Maria shared that she...", "Dot explained...")
@@ -188,12 +194,14 @@ Content:
 {CONTENT}
 ---
 
-Provide only the score. Importance Score:
+{TYPE_SPECIFIC_GUIDANCE}
+
+Output ONLY a numeric value between 0 and 1 representing the importance (e.g., 0.7).
 `;
 
 const IMPORTANCE_GUIDANCE = {
-  user_chat: "Focus on user reflections, goals, decisions, strong emotions, key facts about them or others. Ignore chit-chat, greetings, simple questions unless they reveal deeper context.",
-  ai_response: "Focus on summaries, insights, key information provided by the AI that the user might refer back to. Ignore generic acknowledgments or simple conversational fillers.",
+  user_chat: "Focus on user's personal information like hobbies (piano playing), career details (working at McKinsey), life events, memories, reflections, goals, decisions, strong emotions, preferences, personal values,and key facts about them or others. Pay special attention to new information about the user's identity, interests, and experiences. Assign higher scores (0.7-0.9) to such personal information.",
+  ai_response: "Focus on insights, key information provided by the AI that the user might refer back to. Ignore generic acknowledgments, mentioning of past memories or simple conversational fillers.",
   uploaded_file_event: "High importance if the file seems significant (e.g., resume, report). Lower if generic (e.g., casual photo).",
   uploaded_document_content: "Score based on the likely relevance and significance of the document's content itself (e.g., meeting notes vs. a shopping list).",
   image_analysis: "Score based on whether the analysis reveals significant objects, scenes, or information relevant to the user's context or potential goals.",
@@ -203,6 +211,18 @@ const IMPORTANCE_GUIDANCE = {
 // --- Image Analysis Prompts ---
 const DEFAULT_IMAGE_ANALYSIS_PROMPT = "Analyze the following image and provide a description.";
 const IMAGE_ANALYSIS_WITH_USER_MESSAGE_PROMPT = `In relation to the user's comment "{USER_MESSAGE}", analyze the following image and provide a relevant description or answer:`;
+
+// Title and Narrative Generation Configuration (NEW)
+const TITLE_NARRATIVE_PROMPT_TEMPLATE = `
+Based on the following collection of related text snippets, described as a "{CONTEXT_DESCRIPTION}", please generate a concise and descriptive title (max 10 words) and a short narrative summary (max 150 words) that captures the core theme or topic.
+
+Format your response strictly as follows:
+Title: [Your Title Here]
+Narrative: [Your Narrative Here]
+
+Snippets:
+{CONTENT}
+`;
 
 module.exports = {
   // Model names from environment or defaults
@@ -226,8 +246,14 @@ module.exports = {
   // Memory Context Prompt for consistent memory usage
   memoryContextPrompt: MEMORY_CONTEXT_PROMPT,
   
-  // Episode narrative generation prompt
+  // Episode narrative generation prompt (can be deprecated if new template is used everywhere)
   episodeNarrativePrompt: EPISODE_NARRATIVE_PROMPT,
+
+  // Title and Narrative Generation (NEW)
+  titleNarrativePromptTemplate: TITLE_NARRATIVE_PROMPT_TEMPLATE,
+  maxContextLengthForSummarization: parseInt(process.env.MAX_CONTEXT_FOR_SUMMARIZATION, 10) || 8000,
+  maxTokensForSummarization: parseInt(process.env.MAX_TOKENS_FOR_SUMMARIZATION, 10) || 250,
+  temperatureForSummarization: parseFloat(process.env.TEMP_FOR_SUMMARIZATION) || 0.5,
 
   // Importance Prompts
   importanceEvaluationBasePrompt: IMPORTANCE_EVALUATION_BASE_PROMPT,

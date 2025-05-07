@@ -1,0 +1,39 @@
+# Episodic Memory Test Scenario
+# This tests the system's ability to form coherent episodes from related content
+# Copy and paste each message individually into the chat UI
+
+## First Topic: Travel Experience (Episode 1)
+I visited Japan last year for a two-week trip. It was an amazing experience!
+
+We started in Tokyo and spent 4 days exploring the city. The blend of modern technology and traditional culture was fascinating.
+
+Kyoto was my favorite city though. The temples and gardens were so peaceful, especially Kinkaku-ji and the bamboo forest in Arashiyama.
+
+The food in Japan was incredible too. I tried everything from ramen and sushi to okonomiyaki and takoyaki.
+
+## Unrelated Topic (Different Episode)
+I've been learning to play the guitar for about 6 months now. It's been challenging but rewarding.
+
+I can play a few songs now, mostly basic ones like "Wonderwall" and "Hey There Delilah".
+
+## Back to Japan Topic (Continue Episode 1)
+One thing I forgot to mention about Japan was how efficient their train system is. The shinkansen (bullet train) was an experience in itself.
+
+I also visited an onsen (hot spring) in Hakone. The views of Mount Fuji while soaking in the hot spring were unforgettable.
+
+## New Topic: Career (Episode 2)
+I've been working at a tech company for the past 3 years as a product manager.
+
+Recently, I've been feeling like I need a change. I'm considering either switching to a different industry or possibly starting my own business.
+
+I've always been passionate about sustainability and environmental issues. Maybe I could find a way to combine my tech background with that passion.
+
+## Memory Test for Episodes
+Can you tell me about my trip to Japan? What were some of the highlights?
+
+What musical instrument am I learning to play?
+
+What's my current job, and what am I considering for my future career?
+
+## Time Gap Marker (Several hours later...)
+I've been thinking more about my career change. I think I might want to explore opportunities in renewable energy or sustainable technology. Do you have any advice on making such a transition from a product management role? 

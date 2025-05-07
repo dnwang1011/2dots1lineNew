@@ -1,7 +1,7 @@
-const GeminiProvider = require('../../src/providers/GeminiProvider');
+const GeminiProvider = require('../../../src/providers/GeminiProvider');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { prisma } = require('../../src/db/prisma');
-const { validateApiKey } = require('../../src/utils/apiKeyValidator');
+const { prisma } = require('../../../src/db/prisma');
+const { validateApiKey } = require('../../../src/utils/apiKeyValidator');
 
 // Mock dependencies
 jest.mock('@google/generative-ai');
@@ -54,7 +54,7 @@ describe('GeminiProvider', () => {
     GoogleGenerativeAI.mockImplementation(() => mockGenAIInstance);
 
     // Mock Prisma history retrieval correctly using the mocked module
-    const { prisma: mockPrisma } = require('../../src/db/prisma');
+    const { prisma: mockPrisma } = require('../../../src/db/prisma');
     mockPrisma.rawData.findMany.mockResolvedValue([]); // Default empty history
 
     // Default mock for validateApiKey (no error)
@@ -98,7 +98,7 @@ describe('GeminiProvider', () => {
 
   describe('sendMessage', () => {
     it('should send a message and return response', async () => {
-      const { prisma: mockPrisma } = require('../../src/db/prisma');
+      const { prisma: mockPrisma } = require('../../../src/db/prisma');
       mockPrisma.rawData.findMany.mockResolvedValue([]); // Ensure history is empty for this test
       const mockResponse = { response: { text: () => 'AI Response' } };
       mockChatModel.sendMessage.mockResolvedValue(mockResponse);
@@ -111,7 +111,7 @@ describe('GeminiProvider', () => {
     });
 
     it('should include additional context', async () => {
-       const { prisma: mockPrisma } = require('../../src/db/prisma');
+       const { prisma: mockPrisma } = require('../../../src/db/prisma');
        mockPrisma.rawData.findMany.mockResolvedValue([]);
        const mockResponse = { response: { text: () => 'AI Response' } };
        mockChatModel.sendMessage.mockResolvedValue(mockResponse);
@@ -125,7 +125,7 @@ describe('GeminiProvider', () => {
      });
 
      it('should handle blocked responses', async () => {
-       const { prisma: mockPrisma } = require('../../src/db/prisma');
+       const { prisma: mockPrisma } = require('../../../src/db/prisma');
        mockPrisma.rawData.findMany.mockResolvedValue([]);
        const mockResponse = { response: { promptFeedback: { blockReason: 'SAFETY' } } };
        mockChatModel.sendMessage.mockResolvedValue(mockResponse);
@@ -137,7 +137,7 @@ describe('GeminiProvider', () => {
      });
 
     it('should handle errors', async () => {
-      const { prisma: mockPrisma } = require('../../src/db/prisma');
+      const { prisma: mockPrisma } = require('../../../src/db/prisma');
       mockPrisma.rawData.findMany.mockResolvedValue([]);
       const error = new Error('Model failed');
       mockChatModel.sendMessage.mockRejectedValue(error);

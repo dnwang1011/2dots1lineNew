@@ -327,11 +327,6 @@
   margin-bottom: 0.5rem;
 }
 
-/* Special formatting for labeled content like "Style:" */
-.message-content strong + br {
-  display: none;
-}
-
 /* Format labeled lists in messages */
 .message-content ul.message-list {
   margin-top: 0.5rem;

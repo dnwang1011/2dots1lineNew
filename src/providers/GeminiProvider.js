@@ -116,27 +116,26 @@ class GeminiProvider extends AIProvider {
 
     try {
       const history = await this._getConversationHistory(userId, sessionId);
-      
-      // REVERTED: Use chat history as is, context passed separately if needed
       const chatConfig = { history };
 
-      // Standard way to add context (if provided by chat.service)
-      // This relies on the model correctly interpreting context provided alongside history
       let messageToSend = message;
-      if (options.memoryContextBlock) {
-         logger.debug('[GeminiProvider] Adding memoryContextBlock to the user message (or potentially as separate history turn if API supports)');
-         // Option 1: Prepend context to the user message (simple approach)
-         messageToSend = `${options.memoryContextBlock}\n\nCURRENT MESSAGE:\n${message}`;
-         // Option 2: If Gemini API better handles it as a separate user turn just before:
-         // chatConfig.history.push({ role: 'user', parts: [{ text: options.memoryContextBlock }] });
-         // We stick to Option 1 for now as modifying history caused issues.
+      let contextPrepended = false; // Flag to ensure only one context block is prepended
+
+      // Prioritize additionalContext (e.g., from file upload for the current turn)
+      if (options.additionalContext && options.additionalContext.content) {
+        logger.debug('[GeminiProvider] Prepending additionalContext.content to the user message.');
+        messageToSend = `CONTEXT FROM UPLOADED DOCUMENT:\n---\n${options.additionalContext.content}\n---\n\nUSER MESSAGE:\n${message}`;
+        contextPrepended = true;
       }
 
-      // Start the chat with the base history
+      // If no additionalContext was prepended, then check for memoryContextBlock (from memory retrieval)
+      if (!contextPrepended && options.memoryContextBlock) {
+         logger.debug('[GeminiProvider] Prepending memoryContextBlock to the user message.');
+         messageToSend = `${options.memoryContextBlock}\n\nCURRENT MESSAGE:\n${message}`;
+      }
+
       const chat = this.chatModel.startChat(chatConfig);
       logger.info(`[GeminiProvider] Sending message (history length ${history.length}) to model...`);
-      
-      // Send the potentially modified user message
       const result = await chat.sendMessage(messageToSend); 
       
       const response = result.response;

@@ -1,7 +1,7 @@
 const dotenv = require('dotenv');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
-const memoryManager = require('../../src/services/memoryManager.service');
+const memoryManager = require('../../../src/services/memoryManager.service');
 
 // Load test environment variables
 dotenv.config({ path: path.resolve(__dirname, '../../.env.test') });
@@ -9,14 +9,14 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env.test') });
 // Set NODE_ENV to test *before* importing modules that might check it
 process.env.NODE_ENV = 'test';
 
-const chatService = require('../../src/services/chat.service');
-const aiService = require('../../src/services/ai.service');
+const chatService = require('../../../src/services/chat.service');
+const aiService = require('../../../src/services/ai.service');
 // Import prisma instance and disconnect function directly
-const { prisma, disconnectPrisma } = require('../../src/db/prisma'); 
-const rawDataRepository = require('../../src/repositories/rawData.repository'); 
+const { prisma, disconnectPrisma } = require('../../../src/db/prisma'); 
+const rawDataRepository = require('../../../src/repositories/rawData.repository'); 
 const MockAIProvider = require('../mocks/MockAIProvider');
 // Import ServiceError for the error test assertion
-const { ServiceError } = require('../../src/utils/errorHandler');
+const { ServiceError } = require('../../../src/utils/errorHandler');
 
 describe('Chat Service Integration Tests', () => {
     let mockProvider;

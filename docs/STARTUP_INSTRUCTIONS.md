@@ -22,6 +22,24 @@ These must be started before running the application.
 
 ## Starting Dependencies
 
+### Prerequisite: Start Docker
+
+Before proceeding, ensure Docker is running on your system. Follow these steps:
+
+1. **Open Docker**:
+   - On macOS, open the Docker application from your Applications folder or search for "Docker" in Spotlight.
+   - Wait for Docker to fully start. You should see the Docker icon in the menu bar.
+
+2. **Verify Docker is Running**:
+   - Open a terminal and run:
+     ```bash
+     docker ps
+     ```
+   - If Docker is running, this command will list any active containers. If Docker is not running, you'll see an error message.
+
+3. **Proceed with Starting Dependencies**:
+   - Once Docker is running, you can continue with the instructions below.
+
 ### Option 1: Using Docker Compose (Recommended)
 
 If you have a `docker-compose.yml` file, start all dependencies with:
@@ -150,172 +168,3 @@ docker rm postgres
 # If running locally
 pg_ctl -D /usr/local/var/postgres stop
 ```
-
-#### Redis
-```bash
-# If using Docker
-docker stop redis
-docker rm redis
-
-# If running locally
-redis-cli shutdown
-```
-
-#### Weaviate
-```bash
-# If using Docker
-docker stop weaviate
-docker rm weaviate
-```
-
-## Resolving Port Conflicts
-
-The application uses the following ports by default:
-- Main server: 3002
-- PostgreSQL: 5432
-- Redis: 6379
-- Weaviate: 8080
-
-If you encounter port conflicts:
-
-### Check for Processes Using a Port
-
-```bash
-# macOS/Linux
-lsof -i :PORT_NUMBER
-
-# Windows
-netstat -ano | findstr :PORT_NUMBER
-```
-
-### Kill Process Using a Port
-
-```bash
-# Find the PID using the port
-lsof -i :3002
-
-# Kill the process
-kill -9 <PID>
-```
-
-### Changing Application Port
-
-To use a different port for the main server, modify the environment variable:
-
-```bash
-# In .env file
-PORT=3003
-
-# Or when starting the application
-PORT=3003 npm start
-```
-
-## Common Issues
-
-1. **Messages recorded but not processed**: If you see messages in the UI but no importance scores or episodes being created, it likely means the Memory Processor Worker is not running.
-
-2. **No episodes being created**: If chunks are being created but no episodes, check if the Episode Agent Worker is running.
-
-3. **Redis connection issues**: Both workers require Redis to be running. Make sure Redis is installed and configured properly.
-
-4. **Weaviate connection issues**: The vector database needs to be running for memory and episode retrieval.
-
-5. **Database connection errors**: Check that PostgreSQL is running and the connection string in your `.env` file is correct.
-
-## Monitoring
-
-You can monitor the application components:
-
-```bash
-# Check all running node processes
-ps aux | grep node
-
-# View logs
-npm run memory:monitor
-
-# Check Docker containers
-docker ps
-```
-
-## Data Persistence and Backups
-
-To back up your data:
-
-```bash
-# Back up the application
-npm run backup
-
-# Back up PostgreSQL data
-pg_dump -U postgres mydatabase > backup.sql
-
-# Back up Weaviate data
-# Weaviate data is stored in the Docker volume, back up the volume
-``` 
-### Check if All Processes are Running
-
-```bash
-ps aux | grep 'node src/' | grep -v grep
-```
-
-You should see three processes (main app, memory worker, episode worker).
-
-### Check Application Logs
-
-To see the main application logs:
-
-```bash
-tail -n 50 app.log
-```
-
-To see memory processing logs:
-
-```bash
-tail -n 50 memory-worker.log
-```
-
-To see episode agent logs:
-
-```bash
-tail -n 50 episode-worker.log
-```
-
-## Complete System Restart
-
-If you need to restart everything:
-
-```bash
-# Stop node processes
-pkill -f "node src/"
-
-# Stop Redis
-redis-cli shutdown
-
-# Restart Docker containers
-docker-compose down
-docker-compose up -d
-
-# Wait for 30 seconds
-echo "Waiting 30 seconds for Docker containers to initialize..."
-sleep 30
-
-# Start Redis
-redis-server &
-
-# Start the application components
-node src/index.js > app.log 2>&1 &
-node src/workers/memoryProcessor.worker.js > memory-worker.log 2>&1 &
-node src/workers/episodeAgent.worker.js > episode-worker.log 2>&1 &
-
-# Check if everything is running
-echo "Checking if all processes are running..."
-ps aux | grep 'node src/' | grep -v grep
-```
-
-## Troubleshooting
-
-If the system isn't working correctly:
-
-1. Check all logs for errors
-2. Make sure all Docker containers are running with `docker ps`
-3. Make sure Redis is running with `redis-cli ping` (should return "PONG")
-4. Restart the components in the correct order as described above 

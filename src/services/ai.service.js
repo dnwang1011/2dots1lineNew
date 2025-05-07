@@ -6,6 +6,7 @@ const { prisma } = require('../db/prisma'); // Keep unused prisma import? Maybe 
 const logger = require('../utils/logger').childLogger('AI_Service');
 const { handleServiceError, ServiceError } = require('../utils/errorHandler');
 const aiConfig = require('../../config/ai.config');
+const serviceConfig = require('../../config/service.config'); // Import service config
 const AIProvider = require('../providers/AIProvider'); // Base class/interface
 const { extractTextFromFile } = require('../utils/fileExtractor'); // Import the new utility
 
@@ -15,23 +16,22 @@ const { extractTextFromFile } = require('../utils/fileExtractor'); // Import the
 let currentProvider = null;
 
 function initializeAIService(providerName) {
-    logger.info(`Initializing AI Service with provider: ${providerName}`);
-    switch (providerName?.toLowerCase()) {
+    const defaultProvider = serviceConfig.ai.defaultProvider;
+    logger.info(`Initializing AI Service with provider: ${providerName || defaultProvider}`);
+    
+    switch ((providerName || defaultProvider).toLowerCase()) {
         case 'gemini':
             currentProvider = new GeminiProvider();
             break;
         // Add other providers here if needed
         default:
-            // Default to Gemini if provider is null/undefined or unrecognized
-            if (providerName) {
-                logger.warn(`Unsupported AI provider specified: ${providerName}. Defaulting to Gemini.`);
-            } else {
-                 logger.warn(`No AI provider specified. Defaulting to Gemini.`);
+            // Default to the configured default provider
+            if (providerName && providerName !== defaultProvider) {
+                logger.warn(`Unsupported AI provider specified: ${providerName}. Defaulting to ${defaultProvider}.`);
             }
-            currentProvider = new GeminiProvider();
-            // Original code threw an error, but defaulting might be more resilient?
-            // throw new Error(`Unsupported AI provider specified: ${providerName}`);
+            currentProvider = new GeminiProvider(); // Update this if other providers are supported
     }
+    
     if (typeof currentProvider.initialize === 'function') {
          currentProvider.initialize(); 
     }    

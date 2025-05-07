@@ -47,3 +47,4 @@ weaviate-data/
 
 # Prisma
 prisma/migrations-dev/ 
+.vercel

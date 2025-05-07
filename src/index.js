@@ -1,11 +1,9 @@
 // src/index.js
-// *** ONLY FOR LOCAL DEVELOPMENT STARTUP ***
 // Defines the Express application
 
 require('dotenv').config();
 
-// --- Server Startup Logic (Only when run directly) ---
-// This block executes only when you run `node src/index.js`
+// --- Server Startup Logic ---
 if (require.main === module) {
   const express = require('express');
   const cors = require('cors');
@@ -24,7 +22,7 @@ if (require.main === module) {
   const chatRoutes = require('./routes/chat.routes');
   const sessionRoutes = require('./routes/session.routes');
 
-  // --- Create Express App for Local ---
+  // --- Create Express App ---
   const app = express();
   const prisma = new PrismaClient();
   const PORT = process.env.PORT || 3002;
@@ -37,7 +35,7 @@ if (require.main === module) {
 
   // --- Logging Middleware ---
   app.use((req, res, next) => {
-    logger.info(`Local Request: ${req.method} ${req.originalUrl}`, { ip: req.ip });
+    logger.info(`Request: ${req.method} ${req.originalUrl}`, { ip: req.ip });
     next();
   });
 
@@ -60,37 +58,42 @@ if (require.main === module) {
     res.status(404).json({ message: 'API endpoint not found' });
   });
 
+  // --- Chat Interface Route ---
+  app.get('/chat', (req, res) => {
+    res.sendFile(path.join(__dirname, '../public', 'chat.html'));
+  });
+
   // --- Frontend Routes & SPA Fallback ---
   app.get('*', (req, res, next) => {
     if (req.originalUrl.startsWith('/api')) {
       return next();
     }
-    res.sendFile(path.join(__dirname, '../public', 'chat.html'));
+    res.sendFile(path.join(__dirname, '../public', 'index.html'));
   });
 
   // --- Centralized Error Handling ---
   app.use(expressErrorHandler);
 
-  // --- Start Local Server Function ---
+  // --- Start Server Function ---
   async function startLocalServer() {
     try {
-      logger.info('[Local Bootstrap] Initializing database...');
+      logger.info('[Bootstrap] Initializing database...');
       const dbInitialized = await initializeDatabase(prisma);
       if (!dbInitialized) {
         logger.error('Failed to initialize database. Exiting...');
         await prisma.$disconnect();
         process.exit(1);
       }
-      logger.info('[Local Bootstrap] Database initialized successfully.');
+      logger.info('[Bootstrap] Database initialized successfully.');
 
-      logger.info('[Local Bootstrap] Initializing ontology...');
+      logger.info('[Bootstrap] Initializing ontology...');
       await initializeOntology(prisma);
-      logger.info('[Local Bootstrap] Ontology initialized successfully.');
+      logger.info('[Bootstrap] Ontology initialized successfully.');
 
-      logger.info('[Local Bootstrap] Starting background agents...');
+      logger.info('[Bootstrap] Starting background agents...');
       consolidationAgent.startConsolidationWorker();
       thoughtAgent.scheduleNightlyThoughtGeneration();
-      logger.info('[Local Bootstrap] Background agents initialized.');
+      logger.info('[Bootstrap] Background agents initialized.');
 
       const fs = require('fs');
       const uploadsDir = path.join(__dirname, '../uploads');
@@ -143,11 +146,6 @@ if (require.main === module) {
     process.exit(1);
   });
 } else {
-  // This block executes if src/index.js is required by another module
-  // We don't want it to do anything in that case for Vercel builds.
-  // You could log a warning here if needed during local testing.
-  // logger.warn('src/index.js was required as a module, but only exports via require.main');
-}
-
-// DO NOT EXPORT THE APP HERE FOR VERCEL
-// // module.exports = app; 
+  // This block executes if this file is required by another module
+  console.log('This module is designed to be run directly, not required.');
+} 

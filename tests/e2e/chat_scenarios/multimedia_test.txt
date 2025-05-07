@@ -1,0 +1,46 @@
+# Multimedia Content Test Scenario
+# This tests the system's ability to process and remember information from images and documents
+# Copy and paste each message individually into the chat UI
+# For image/document tests, you'll need to prepare sample files in the fixtures directory
+
+## Introduction and Context
+I'd like to share some visuals and documents with you to see how well you can process them.
+
+## Image Test 1: Personal Photo
+[Upload a personal photo - e.g., person hiking, at a beach, etc.]
+This is from my trip to Hawaii last year. What do you see in this image?
+
+## Follow-up on Image
+That was such a relaxing vacation. I spent 10 days on Maui and Kauai.
+
+## Image Test 2: Chart or Diagram
+[Upload a business chart or diagram - e.g., sales graph, process flow, etc.]
+This is data from our company's quarterly performance. What insights can you gather from this chart?
+
+## Document Test 1: Resume or CV
+[Upload a sample resume/CV document]
+This is my resume. Could you summarize my background and experience?
+
+## Document Test 2: Research Paper or Article
+[Upload a short research paper or article - preferably related to AI or healthcare]
+I found this article interesting. Could you give me a summary of the key findings or points?
+
+## Memory Test for Multimedia Content
+What do you remember about my trip to Hawaii based on the photo I shared?
+
+Can you recall any specific details from the chart I showed you about my company's performance?
+
+Based on my resume, what would you say are my key skills and experience?
+
+What was the main topic of the research paper I shared with you?
+
+## Reasoning with Multimedia Content
+Based on my resume and our previous discussions, what kind of career opportunities might be a good fit for me?
+
+Considering the business chart I showed you, what suggestions might you have for improving performance in the coming quarter?
+
+## Emotion and Image Connection
+[Upload a scenic landscape image]
+This view reminds me of my childhood home. I always feel peaceful when I see landscapes like this.
+
+Do you think the environments we grow up in shape our preferences later in life? 

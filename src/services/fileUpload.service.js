@@ -7,6 +7,7 @@ const aiConfig = require('../../config/ai.config');
 const fs = require('fs');
 const path = require('path');
 const { addMemoryJob } = require('../utils/queues'); // Import the queue helper
+const memoryConfig = require('../../config/memory.config'); // Import memoryConfig for default importance
 
 /**
  * Processes an uploaded file, interacts with AI service, records data, and triggers memory processing.
@@ -25,6 +26,7 @@ async function processUploadedFile(userId, sessionId, file, message) {
   let fileEventRawData = null;
   let analysisRawData = null;
   let tempFilePath = file.path; // Now safe to access file.path
+  let docContentRawData = null; // ADDED: To store RawData for document content
 
   try {
     logger.info(`Starting processing for file: ${file.originalname} (user: ${userId}, session: ${sessionId})`);
@@ -72,17 +74,34 @@ async function processUploadedFile(userId, sessionId, file, message) {
       // --- Document Processing ---
       logger.info(`Processing document file: ${file.originalname}`);
       try {
-          // Pass the actual tempFilePath to the processing function
           const fileContentResult = await aiService.processFileContent(tempFilePath);
 
-          if (!fileContentResult.success) {
-              throw new Error(fileContentResult.error || 'Unknown error processing document content.');
-          }
-          if (!fileContentResult.text) {
-              throw new Error('Could not extract text content from the document.');
+          if (!fileContentResult.success || !fileContentResult.text) { // Simplified check
+              const errorDetail = fileContentResult.error || 'Could not extract text content from the document.';
+              throw new Error(errorDetail);
           }
           logger.info(`Document text extracted (first 100 chars): ${fileContentResult.text.substring(0, 100)}...`);
 
+          // --- ADDED: Create RawData for the extracted document content itself ---
+          logger.info(`Creating RawData entry for extracted document content from: ${file.originalname}`);
+          docContentRawData = await rawDataRepository.create({
+              userId: userId,
+              perspectiveOwnerId: userId, // Or determine appropriately if different
+              sessionId: sessionId,
+              contentType: 'uploaded_document_content',
+              content: fileContentResult.text,
+              importanceScore: memoryConfig.defaultFileUploadEventImportance, // Use a high default importance
+              metadata: {
+                  originalFilename: file.originalname,
+                  mimetype: file.mimetype,
+                  size: file.size, // Size of original file, not extracted text
+                  fileEventRawDataId: fileEventRawData?.id, // Link to the upload event
+                  userMessage: message || null
+              },
+              processingStatus: 'pending' // Will be picked up by MemoryManager
+          });
+          logger.info(`Recorded extracted document content RawData: ${docContentRawData.id}`);
+          // --- END ADDED SECTION ---
 
           if (message) {
             // Call AI with user message + document context
@@ -134,12 +153,16 @@ async function processUploadedFile(userId, sessionId, file, message) {
     logger.info(`Recorded AI analysis result: ${analysisRawData.id}`);
 
     // 4. Trigger memory processing VIA QUEUE
-    if (fileEventRawData?.id) { // Null check just in case
+    if (fileEventRawData?.id) {
         logger.info(`[Queue Trigger] Adding job for File Event RawData: ${fileEventRawData.id}`);
-        // Send only ID
         await addMemoryJob('processRawData', { rawDataId: fileEventRawData.id });
-        // addMemoryJob logs its own errors
     }
+    // --- ADDED: Queue job for the new document content RawData ---
+    if (docContentRawData?.id) {
+        logger.info(`[Queue Trigger] Adding job for Extracted Document Content RawData: ${docContentRawData.id}`);
+        await addMemoryJob('processRawData', { rawDataId: docContentRawData.id });
+    }
+    // --- END ADDED SECTION ---
      if (analysisRawData?.id) {
         logger.info(`[Queue Trigger] Adding job for Analysis RawData: ${analysisRawData.id}`);
         await addMemoryJob('processRawData', { rawDataId: analysisRawData.id });
@@ -150,6 +173,7 @@ async function processUploadedFile(userId, sessionId, file, message) {
         success: true,
         message: analysisResult.text,
         fileEventRawDataId: fileEventRawData?.id,
+        docContentRawDataId: docContentRawData?.id,
         analysisRawDataId: analysisRawData?.id
     };
 

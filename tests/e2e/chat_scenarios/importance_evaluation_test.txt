@@ -1,0 +1,49 @@
+# Importance Evaluation Test Scenario
+# This tests the system's ability to correctly evaluate and prioritize memory importance
+# Copy and paste each message individually into the chat UI
+
+## High Importance: Significant Life Events
+I just got engaged last weekend! My partner proposed during our hike to the top of Mount Rainier.
+
+We're thinking of getting married next summer, probably in June or July when the weather is nice.
+
+## Low Importance: Small Talk
+How's the weather today? It seems a bit cloudy outside.
+
+I think I might order pizza for dinner tonight. Not sure if I want pepperoni or veggie.
+
+## Medium Importance: Personal Preferences
+I've always loved reading science fiction, especially authors like Asimov and Le Guin. Their ability to create entire worlds is amazing.
+
+For music, I tend to listen to indie rock and folk. My favorite band is Fleet Foxes.
+
+## High Importance: Work/Career Details
+I'm working on a major project at work - we're developing a new machine learning system for medical diagnostics.
+
+The system uses computer vision to analyze medical images and detect early signs of cancer. It could potentially save thousands of lives.
+
+## Low Importance: Random Thoughts
+I wonder if dogs dream about chasing squirrels. They always seem to move their paws while sleeping.
+
+Blue used to be my favorite color when I was a kid, but now I tend to prefer green.
+
+## High Importance: Personal Goals
+One of my biggest goals is to start my own healthcare technology company within the next five years.
+
+I want to create accessible medical AI tools for underserved communities around the world.
+
+## Medium Importance: Challenges
+I'm finding it difficult to balance my demanding job with making time for my new fiancé and wedding planning.
+
+Sometimes I feel overwhelmed, but I'm trying to take things one day at a time.
+
+## Memory Test for Importance Evaluation
+Can you tell me about my engagement? When and where did it happen?
+
+What kind of project am I working on at my job?
+
+What are my long-term career goals?
+
+Do you remember what I said about my favorite color?
+
+Can you remind me what I'm struggling with in terms of work-life balance? 

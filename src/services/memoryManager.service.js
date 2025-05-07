@@ -20,6 +20,8 @@ const logger = require('../utils/logger').childLogger('MemoryManager'); // Impor
 const memoryConfig = require('../../config/memory.config'); // Import memory config
 const aiConfig = require('../../config/ai.config'); // Import AI config for prompts
 const { addMemoryJob, addEpisodeAgentJob } = require('../utils/queues'); // Import the new queue helper
+const { storeObjectInWeaviate } = require('../utils/weaviateHelper'); // USE SHARED HELPER
+const { expandVector } = require('../utils/vectorUtils'); // IMPORT FROM NEW UTILITY
 
 // --- Weaviate Schema Checking Functions ---
 // (Keep these as they interact with Weaviate client, not Prisma directly)
@@ -299,7 +301,7 @@ async function addPropertyToClass(client, className, propName) {
       // EpisodeEmbedding props
       case 'episodeDbId': propertyConfig = { name: propName, dataType: ['text'], description: 'ID of the Episode in the database' }; break;
       case 'title': propertyConfig = { name: propName, dataType: ['text'], description: 'Title of the episode' }; break;
-      case 'narrative': propertyConfig = { name: propName, dataType: ['text'], description: 'Narrative description of the episode' }; break;
+      case 'narrative': propertyConfig = { name: propName, dataType: ['text'], description: 'Narrative summary of the episode' }; break;
       case 'occurredAt': propertyConfig = { name: propName, dataType: ['date'], description: 'When the episode occurred' }; break;
       
       // ThoughtEmbedding props
@@ -596,15 +598,15 @@ async function createEpisodeEmbeddingClass(client) {
     throw new Error('Weaviate client is required to create class');
   }
   try {
-    logger.info('[MemoryManager] Creating EpisodeEmbedding class with properties: episodeDbId, title, userId');
+    logger.info('[MemoryManager] Creating EpisodeEmbedding class with properties: episodeDbId, title, narrative, userId, createdAt');
     
     const classObj = {
       class: 'EpisodeEmbedding',
       description: 'An episode with its centroid vector',
-      vectorizer: 'none', // Set vectorizer to none as we provide vectors manually
-      vectorIndexType: 'hnsw', // Explicitly setting to match Memory class
+      vectorizer: 'none', 
+      vectorIndexType: 'hnsw', 
       vectorIndexConfig: {
-        distance: 'cosine', // Using cosine similarity like Memory class has
+        distance: 'cosine', 
       },
       properties: [
         {
@@ -618,9 +620,19 @@ async function createEpisodeEmbeddingClass(client) {
           dataType: ['text'],
         },
         {
+          name: 'narrative',
+          description: 'Narrative summary of the episode',
+          dataType: ['text'],
+        },
+        {
           name: 'userId',
           description: 'ID of the user this episode belongs to',
           dataType: ['text']
+        },
+        {
+          name: 'createdAt',
+          description: 'Timestamp when the episode was created in DB',
+          dataType: ['date'],
         }
       ]
     };
@@ -701,38 +713,6 @@ async function createThoughtEmbeddingClass(client) {
 }
 
 // --- Memory Manager Class ---
-
-/**
- * Expands a vector to the target dimension by duplicating values
- * @param {number[]} vector - Original vector
- * @param {number} targetDim - Target dimension
- * @returns {number[]} - Expanded vector
- */
-async function expandVector(vector, targetDim) {
-  if (vector.length === targetDim) return vector;
-  
-  if (vector.length > targetDim) {
-    // Truncate if vector is too long
-    return vector.slice(0, targetDim);
-  }
-  
-  // Expand by duplicating values
-  const expandedVector = new Array(targetDim).fill(0);
-  
-  // Copy original values
-  for (let i = 0; i < vector.length; i++) {
-    expandedVector[i] = vector[i];
-  }
-  
-  // Fill remaining positions
-  for (let i = vector.length; i < targetDim; i++) {
-    expandedVector[i] = vector[i % vector.length];
-  }
-  
-  // Normalize to maintain unit length
-  const magnitude = Math.sqrt(expandedVector.reduce((sum, val) => sum + val * val, 0));
-  return expandedVector.map(val => val / magnitude);
-}
 
 class MemoryManager {
   constructor() {
@@ -856,7 +836,16 @@ class MemoryManager {
 
       // Flexible parsing: Trim whitespace and try to parse any number
       const cleanedCompletion = completion.trim();
-      const score = parseFloat(cleanedCompletion);
+      
+      // First try to parse if there's a labeled score like "Importance Score: 0.8"
+      let score;
+      const scoreMatch = cleanedCompletion.match(/Importance Score:?\s*([0-9.]+)/i);
+      if (scoreMatch && scoreMatch[1]) {
+        score = parseFloat(scoreMatch[1]);
+      } else {
+        // If no labeled score, try to parse the whole text as a number
+        score = parseFloat(cleanedCompletion);
+      }
 
       if (!isNaN(score) && score >= 0 && score <= 1) {
         logger.info(`[MemoryManager] Importance score: ${score.toFixed(2)}`);
@@ -1094,7 +1083,7 @@ class MemoryManager {
    * Returns true if successful, false otherwise.
    */
   async generateAndStoreEmbeddings(storedChunks, rawData, isWeaviateAvailable) {
-    if (!storedChunks || storedChunks.length === 0) return true; // No chunks, technically successful
+    if (!storedChunks || storedChunks.length === 0) return true;
 
     const chunkTexts = storedChunks.map(chunk => chunk.text);
     logger.info(`[MemoryManager] Generating embeddings for ${chunkTexts.length} stored chunks (rawData ${rawData.id})`);
@@ -1104,138 +1093,84 @@ class MemoryManager {
         embeddings = await aiService.generateEmbeddings(chunkTexts);
     } catch (embeddingError) {
          logger.error(`[MemoryManager] AI Service error generating embeddings for rawData ${rawData.id}: ${embeddingError.message}`);
-         embeddings = null; // Treat service error same as getting null/wrong count
+         embeddings = null; 
     }
 
     if (!embeddings || embeddings.length !== storedChunks.length) {
-      logger.error(`[MemoryManager] Failed to generate embeddings or mismatch in count for rawData ${rawData.id}. Expected ${storedChunks.length}, Got ${embeddings?.length}`);
-      const chunkIds = storedChunks.map(c => c.id);
+      logger.error(`[MemoryManager] Failed to generate embeddings or mismatch for rawData ${rawData.id}. Expected ${storedChunks.length}, Got ${embeddings?.length}`);
+      const chunkIdsToUpdateError = storedChunks.map(c => c.id);
       try {
-          await chunkRepository.updateMany({ where: { id: { in: chunkIds } }, data: { processingStatus: 'embedding_error' } });
+          await chunkRepository.updateMany({ where: { id: { in: chunkIdsToUpdateError } }, data: { processingStatus: 'embedding_error' } });
       } catch (updateError) {
            logger.error(`[MemoryManager] Failed to update chunk status to embedding_error for rawData ${rawData.id}: ${updateError.message}`);
       }
-      return false; // Signal failure
+      return false; 
     }
-
     logger.info(`[MemoryManager] Successfully generated ${embeddings.length} embeddings.`);
 
-    const weaviateObjects = [];
-    const chunkIdsToUpdate = storedChunks.map(c => c.id);
-
+    const weaviatePayloads = []; // Renamed for clarity
     for (let i = 0; i < storedChunks.length; i++) {
       const chunk = storedChunks[i];
       const embedding = embeddings[i];
-
-      // Prepare object for Weaviate if available
-      if (isWeaviateAvailable) {
-        // Debug log for mapping verification
-        logger.debug(`[MemoryManager] Mapping chunk.id: ${chunk.id} to chunkDbId property`);
-        weaviateObjects.push({
-          class: 'ChunkEmbedding',
-          id: uuidv4(), // Generate unique UUID for Weaviate object
-          properties: {
-            chunkDbId: chunk.id, // IMPORTANT: This is the key property for mapping to Prisma
-            rawDataId: chunk.rawDataId,
-            userId: chunk.userId,
-            sessionId: chunk.sessionId,
-            text: chunk.text,
-            chunkIndex: chunk.index,
-            tokenCount: chunk.tokenCount,
-            importance: chunk.importanceScore,
-            contentType: chunk.metadata?.contentType || rawData.contentType,
-            sourceCreatedAt: chunk.metadata?.sourceCreatedAt || rawData.createdAt,
-            perspectiveOwnerId: chunk.metadata?.perspectiveOwnerId || rawData.perspectiveOwnerId,
-            subjectId: chunk.metadata?.subjectId || rawData.subjectId,
-            topicKey: chunk.metadata?.topicKey || rawData.topicKey,
-            skipImportanceCheck: !!rawData.skipImportanceCheck,
-          },
-          vector: embedding
-        });
-      }
+      weaviatePayloads.push({
+        className: 'ChunkEmbedding',
+        properties: {
+          chunkDbId: chunk.id, 
+          rawDataId: chunk.rawDataId,
+          userId: chunk.userId,
+          sessionId: chunk.sessionId,
+          text: chunk.text,
+          chunkIndex: chunk.index,
+          tokenCount: chunk.tokenCount,
+          importance: chunk.importanceScore,
+          contentType: chunk.metadata?.contentType || rawData.contentType,
+          sourceCreatedAt: chunk.metadata?.sourceCreatedAt || rawData.createdAt,
+          perspectiveOwnerId: chunk.metadata?.perspectiveOwnerId || rawData.perspectiveOwnerId,
+          subjectId: chunk.metadata?.subjectId || rawData.subjectId,
+          topicKey: chunk.metadata?.topicKey || rawData.topicKey,
+          skipImportanceCheck: !!rawData.skipImportanceCheck, // Ensure boolean
+        },
+        vector: embedding
+        // Weaviate ID will be generated by storeObjectInWeaviate if not provided
+      });
     }
+    logger.info(`[MemoryManager] Finished preparing ${weaviatePayloads.length} Weaviate payloads.`);
 
-    // chunkIdsToUpdate was defined earlier using map
-    logger.info(`[MemoryManager] Finished preparing ${weaviateObjects.length} Weaviate objects.`);
-
-    // Batch update Prisma statuses
-    const newStatus = isWeaviateAvailable ? 'processed' : 'pending_weaviate';
+    const chunkIdsToUpdatePrisma = storedChunks.map(c => c.id);
+    const newPrismaStatus = isWeaviateAvailable ? 'processed' : 'pending_weaviate';
     try {
         await chunkRepository.updateMany({
-            where: { id: { in: chunkIdsToUpdate } },
-            data: { processingStatus: newStatus }
+            where: { id: { in: chunkIdsToUpdatePrisma } },
+            data: { processingStatus: newPrismaStatus }
         });
-        logger.info(`[MemoryManager] Updated status to '${newStatus}' for ${chunkIdsToUpdate.length} chunks in Prisma.`);
+        logger.info(`[MemoryManager] Updated status to '${newPrismaStatus}' for ${chunkIdsToUpdatePrisma.length} chunks in Prisma.`);
     } catch (updateError) {
-        logger.error(`[MemoryManager] Failed to batch update chunk statuses to ${newStatus}: ${updateError.message}`, { stack: updateError.stack });
+        logger.error(`[MemoryManager] Failed to batch update chunk statuses to ${newPrismaStatus}: ${updateError.message}`, { stack: updateError.stack });
         return false; 
     }
 
-    // Batch import to Weaviate
-    let importAttempted = false;
-    let importSuccess = false;
-    try {
-        if (isWeaviateAvailable && weaviateObjects.length > 0) {
-          importAttempted = true;
-          importSuccess = await this.batchImportToWeaviate(weaviateObjects, 'ChunkEmbedding');
-          
-          // ADD VERIFICATION STEP: Check if at least one chunk was properly imported
-          if (importSuccess && weaviateObjects.length > 0) {
-            try {
-              const client = weaviateClientUtil.getClient();
-              // Select the first chunk to verify
-              const sampleChunk = weaviateObjects[0];
-              const sampleChunkDbId = sampleChunk.properties.chunkDbId;
-              
-              // Wait a short time for indexing
-              await new Promise(resolve => setTimeout(resolve, 1000));
-              
-              // Verify the import with GraphQL
-              logger.info(`[MemoryManager] Verifying import for chunk ${sampleChunkDbId}`);
-              const verifyResult = await client.graphql
-                .get()
-                .withClassName('ChunkEmbedding')
-                .withFields('chunkDbId _additional { id vector }')
-                .withWhere({
-                  path: ['chunkDbId'],
-                  operator: 'Equal',
-                  valueString: sampleChunkDbId
-                })
-                .do();
-              
-              const foundChunks = verifyResult?.data?.Get?.ChunkEmbedding || [];
-              if (foundChunks.length > 0 && foundChunks[0]._additional?.vector) {
-                logger.info(`[MemoryManager] Successfully verified vector in Weaviate for chunk ${sampleChunkDbId}`);
-              } else {
-                logger.warn(`[MemoryManager] Vector verification failed for chunk ${sampleChunkDbId}. Response: ${JSON.stringify(verifyResult?.data || {})}`);
-                // Still consider success if the batch import reported success
-              }
-            } catch (verifyError) {
-              logger.error(`[MemoryManager] Error verifying vector import: ${verifyError.message}`);
-              // Continue despite verification error
-            }
-          }
-           
-           if (!importSuccess && newStatus === 'processed') {
-              return false; // Signal overall failure due to Weaviate import issue
-           } else if (!importSuccess) {
-                 logger.warn(`[MemoryManager] Weaviate import failed for rawData ${rawData.id}. Chunks remain 'pending_weaviate'.`);
-                 return false; // Signal failure
-           }
-        } else if (!isWeaviateAvailable) {
-          logger.warn(`[MemoryManager] Weaviate not available. Skipping import.`);
-          return true; // Return true because embedding itself was okay, just waiting for Weaviate
+    let allImportsSuccessful = true;
+    if (isWeaviateAvailable && weaviatePayloads.length > 0) {
+        logger.info(`[MemoryManager] Starting import of ${weaviatePayloads.length} chunk objects to Weaviate.`);
+        // Use the existing batchImportToWeaviate which will now call the helper
+        allImportsSuccessful = await this.batchImportToWeaviate(weaviatePayloads, 'ChunkEmbedding'); 
+
+        if (!allImportsSuccessful) {
+            logger.warn(`[MemoryManager] One or more chunk imports to Weaviate failed for rawData ${rawData.id}. Some chunks may remain 'pending_weaviate' or become 'error'.`);
+            // Optionally, revert Prisma status for failed chunks if identifiable, or handle cleanup separately
+            return false; // Indicate that the embedding/storage stage had issues
+        } else {
+            logger.info(`[MemoryManager] Successfully imported/verified ${weaviatePayloads.length} chunks to Weaviate.`);
         }
-    } catch (importError) {
-        logger.error(`[MemoryManager] Error during Weaviate import process for rawData ${rawData.id}: ${importError.message}`, { stack: importError.stack });
-        return false; // Fail if the import process itself throws an error
+    } else if (!isWeaviateAvailable) {
+        logger.warn(`[MemoryManager] Weaviate not available. Skipping import. Chunks remain 'pending_weaviate'.`);
+        return true; // Embeddings generated, waiting for Weaviate
     }
 
-    // --- Trigger Agent Processing --- 
-    if (importSuccess) { // Only trigger if Weaviate import was successful
+    if (allImportsSuccessful) {
         const episodeAgentService = require('./episodeAgent'); 
         for (const chunk of storedChunks) {
-            const delayMs = 7000; // Use a longer delay (7 seconds) to allow Weaviate indexing to complete
+            const delayMs = 7000; 
             logger.debug(`[MemoryManager->Timeout] Scheduling episodeAgent call for Chunk ID: ${chunk.id} in ${delayMs}ms`);
             setTimeout(() => {
                 logger.info(`[MemoryManager->Timeout] Executing delayed call to episodeAgent for Chunk ID: ${chunk.id}`);
@@ -1247,108 +1182,69 @@ class MemoryManager {
             }, delayMs);
         }
     } else {
-        logger.warn(`[MemoryManager] Skipping EpisodeAgent trigger due to Weaviate import failure for rawData ${rawData.id}.`);
+        logger.warn(`[MemoryManager] Skipping EpisodeAgent trigger due to Weaviate import issues for rawData ${rawData.id}.`);
     }
     
-    return true; // Signal success of this stage (embedding+import attempted)
+    return allImportsSuccessful;
   }
 
   /**
    * Batches object imports to Weaviate.
    * Returns true if batch completed (or no objects), false on error.
    */
-  async batchImportToWeaviate(objects, className = 'ChunkEmbedding') {
-    const client = weaviateClientUtil.getClient();
-    if (!client || !this.isWeaviateAvailable) {
-      logger.warn(`[MemoryManager] Weaviate client not available or not connected. Skipping batch import for ${className}.`);
-      return true; // No objects, technically successful
+  async batchImportToWeaviate(payloads, className) { // className is already passed, but each payload also has it
+    if (!this.isWeaviateAvailable) {
+      logger.warn(`[MemoryManager] Weaviate not available. Skipping batch import for ${className}.`);
+      return true; // Or false, depending on desired strictness for non-availability
     }
-    if (!objects || objects.length === 0) {
-      logger.info(`[MemoryManager] No objects provided for Weaviate batch import to ${className}.`);
-      return true; // No objects, technically successful
+    if (!payloads || payloads.length === 0) {
+      logger.info(`[MemoryManager] No payloads for Weaviate batch import to ${className}.`);
+      return true;
     }
 
-    // Use configured batch size
-    const batchSize = memoryConfig.weaviateBatchSize;
-    let batcher = client.batch.objectsBatcher();
-    let counter = 0;
-    let totalImported = 0;
-    let importHasErrors = false;
-
-    logger.info(`[MemoryManager] Preparing ${objects.length} objects for Weaviate batch import to class ${className}`);
-
-    for (const obj of objects) {
-      batcher = batcher.withObject(obj);
-
-      if (++counter === batchSize) {
-        try {
-          logger.debug(`[MemoryManager] Executing Weaviate batch of ${counter} objects`);
-          const results = await batcher.do();
-          // Check for errors in results
-          // --- Uncomment Enhanced Logging --- 
-          logger.debug(`[MemoryManager] Weaviate Batch Result (partial batch): ${JSON.stringify(results, null, 2)}`);
-          // --- End Uncomment --- 
-          results.forEach(result => {
-            if (result.result?.errors) {
-              logger.error(`[MemoryManager] Error importing object ${result.id} to Weaviate:`, { errors: result.result.errors });
-              importHasErrors = true; // Track if any object failed
-            }
-          });
-          totalImported += counter; // Assume success if no specific error logged
-          logger.debug(`[MemoryManager] Batch import successful. Total imported so far: ${totalImported}`);
-        } catch (error) {
-          logger.error(`[MemoryManager] Error during Weaviate batch import: ${error.message}`, { stack: error.stack });
-          // Decide how to handle batch failure - retry? Mark chunks as pending?
+    let allSuccessful = true;
+    logger.info(`[MemoryManager] Processing batch of ${payloads.length} objects for Weaviate class ${className} using storeObjectInWeaviate helper.`);
+    
+    for (const payload of payloads) {
+        // payload is expected to be { className, properties, vector, explicitId (optional) }
+        const weaviateId = await storeObjectInWeaviate(payload.className || className, payload.properties, payload.vector, payload.explicitId);
+        if (!weaviateId) {
+            allSuccessful = false;
+            logger.warn(`[MemoryManager] Failed to store object via helper: DB ID ${payload.properties.chunkDbId || payload.properties.episodeDbId}`);
+            // Continue processing other objects in the batch
         }
-        // Reset batcher and counter
-        batcher = client.batch.objectsBatcher();
-        counter = 0;
-      }
     }
 
-    // Send the last remaining batch
-    if (counter > 0) {
-      try {
-        logger.debug(`[MemoryManager] Executing final Weaviate batch of ${counter} objects`);
-        const results = await batcher.do();
-        // --- Uncomment Enhanced Logging --- 
-        logger.debug(`[MemoryManager] Weaviate Batch Result (final batch): ${JSON.stringify(results, null, 2)}`);
-        // --- End Uncomment --- 
-        results.forEach(result => {
-           if (result.result?.errors) {
-             logger.error(`[MemoryManager] Error importing object ${result.id} to Weaviate:`, { errors: result.result.errors });
-             importHasErrors = true; // Track if any object failed
-           }
-        });
-        totalImported += counter;
-      } catch (error) {
-        logger.error(`[MemoryManager] Error during final Weaviate batch import: ${error.message}`, { stack: error.stack });
-      }
+    if (allSuccessful) {
+        logger.info(`[MemoryManager] All ${payloads.length} objects in batch processed successfully via storeObjectInWeaviate for class ${className}.`);
+    } else {
+        logger.warn(`[MemoryManager] One or more objects in batch failed to store via storeObjectInWeaviate for class ${className}.`);
     }
-
-    logger.info(`[MemoryManager] Finished Weaviate batch import for ${totalImported} objects to class ${className}. Errors: ${importHasErrors}`);
-    return !importHasErrors; // Return true only if NO errors occurred during import
+    return allSuccessful;
   }
 
   /**
-   * Starts a periodic check for Weaviate connection status.
+   * Start a periodic health check to ensure Weaviate connection is maintained
+   * If Weaviate becomes available, process any pending chunks
    */
   startPeriodicWeaviateCheck() {
-    if (this.weaviateCheckInterval) {
-      clearInterval(this.weaviateCheckInterval);
-    }
-    // Check every 5 minutes (adjust interval as needed)
+    const serviceConfig = require('../../config/service.config');
+    const checkIntervalMinutes = serviceConfig.healthChecks.weaviateHealthCheckMinutes;
+    
+    logger.info(`[MemoryManager] Starting periodic Weaviate health check (every ${checkIntervalMinutes} minutes)`);
+    
     this.weaviateCheckInterval = setInterval(async () => {
-      const wasAvailable = this.isWeaviateAvailable;
-      this.isWeaviateAvailable = await weaviateClientUtil.checkConnection();
-      if (this.isWeaviateAvailable && !wasAvailable) {
-        logger.info('[MemoryManager] Weaviate connection re-established. Processing pending chunks...');
-        // Add logic here to find and process chunks with status 'pending_weaviate'
-        this.processPendingWeaviateChunks();
-      } else if (!this.isWeaviateAvailable && wasAvailable) {
-        logger.warn('[MemoryManager] Weaviate connection lost.');
+      logger.debug('[MemoryManager] Running periodic Weaviate health check');
+      
+      const isWeaviateAvailable = await checkWeaviateSchema();
+      
+      if (isWeaviateAvailable) {
+        logger.debug('[MemoryManager] Weaviate is available. Processing any pending chunks.');
+        await this.processPendingWeaviateChunks();
+      } else {
+        logger.warn('[MemoryManager] Weaviate is still unavailable during health check.');
       }
-    }, 5 * 60 * 1000);
+    }, checkIntervalMinutes * 60 * 1000); // Convert minutes to milliseconds
   }
 
   /**
@@ -1611,4 +1507,3 @@ memoryManagerInstance.initialize();
 
 // Export the singleton instance
 module.exports = memoryManagerInstance;
-module.exports.expandVector = expandVector; // Export the expandVector function

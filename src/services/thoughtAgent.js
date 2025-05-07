@@ -9,11 +9,12 @@ const logger = require('../utils/logger').childLogger('ThoughtAgent');
 const weaviateClientUtil = require('../utils/weaviateClient');
 const aiService = require('./ai.service'); // For generating thoughts
 const schedule = require('node-schedule');
+const episodicConfig = require('../../config/episodic.config'); // Import episodic config
 
-// Configuration parameters
-const MIN_EPISODES_FOR_THOUGHT = 2; // Minimum number of related episodes to generate a thought
-const MIN_EPISODE_SIMILARITY = 0.75; // Minimum similarity between episodes to consider them related
-const MIN_THOUGHT_IMPORTANCE = 0.6; // Minimum importance for a thought to be stored
+// Import configuration parameters from centralized config
+const MIN_EPISODES_FOR_THOUGHT = episodicConfig.thought.minEpisodesForThought;
+const MIN_EPISODE_SIMILARITY = episodicConfig.thought.minEpisodeSimilarity;
+const MIN_THOUGHT_IMPORTANCE = episodicConfig.thought.minImportance;
 
 /**
  * Generate thoughts for a user by analyzing their episodes

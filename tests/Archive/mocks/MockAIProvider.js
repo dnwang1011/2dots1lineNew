@@ -1,4 +1,4 @@
-const AIProvider = require('../../src/providers/AIProvider');
+const AIProvider = require('../../../src/providers/AIProvider');
 
 /**
  * Mock AI Provider for testing
